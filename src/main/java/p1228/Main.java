@@ -1,0 +1,343 @@
+package p1228;
+
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.security.SecureRandom;
+import java.time.Clock;
+import java.time.Instant;
+import java.time.ZoneOffset;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Random;
+import java.util.concurrent.CountDownLatch;
+
+// ===== 1. Main (CLI エントリポイント) =====
+// サブコマンド: run / sync-commands / commands / demo / test(案内)
+// テスト実体は run.sh test → p1228.P1228Test が担う。
+public final class Main {
+
+    private Main() {}
+
+    public static void main(String[] args) throws Exception {
+        String command = args.length == 0 ? "help" : args[0];
+        Path configPath = Path.of(System.getProperty("p1228.config", "config.json"));
+        switch (command) {
+            case "commands" -> printCommands(configPath);
+            case "demo" -> runDemo();
+            case "sync-commands" -> syncCommands(configPath);
+            case "run" -> run(configPath);
+            case "test" -> System.out.println("テストは ./run.sh test で実行してください (p1228.P1228Test)。");
+            default -> printHelp();
+        }
+    }
+
+    private static void printHelp() {
+        System.out.println("""
+                p1228-java — Discord BOT 3体 (星燈/言ノ葉/紡言) の Java 21 移植版
+                使い方:
+                  ./run.sh test            オフライン単体テストを実行
+                  ./run.sh commands        BOTごとの Slash コマンド定義JSONを表示 (オフライン)
+                  ./run.sh demo            フェイクDiscordで星燈機能を一通り動かす (オフライン)
+                  ./run.sh sync-commands   Discordへ Slash コマンドを同期 (要Token・要ネットワーク)
+                  ./run.sh run             3体の Gateway 接続を開始 (要Token・要ネットワーク)
+                設定: config.json + .env (Token / Application ID / Worker Secret)
+                """);
+    }
+
+    // ===== 2. commands (オフライン: 定義JSONの表示) =====
+    private static void printCommands(Path configPath) throws Exception {
+        Config config = Config.load(configPath, false);
+        for (String botId : Config.REQUIRED_BOTS) {
+            Config.Bot bot = config.bots.get(botId);
+            System.out.println("===== bot: " + botId + " (" + bot.displayName + " / watching: " + bot.watching
+                    + " / intents: " + bot.intents + ") =====");
+            System.out.println(Json.stringify(Commands.forBot(botId)));
+            System.out.println();
+        }
+    }
+
+    // ===== 3. sync-commands (Discord REST 同期) =====
+    private static void syncCommands(Path configPath) throws Exception {
+        Config config = Config.load(configPath, true);
+        for (String botId : Config.REQUIRED_BOTS) {
+            Config.Bot bot = config.bots.get(botId);
+            DiscordRest rest = new DiscordRest(botId, bot.applicationId, bot.token);
+            List<Map<String, Object>> commands = Commands.forBot(botId);
+            rest.syncCommands(bot.applicationId, commands, "sync-" + botId + "-" + System.currentTimeMillis());
+            System.out.println("application_commands_synced bot_id=" + botId + " count=" + commands.size());
+        }
+    }
+
+    // ===== 4. run (3体の Gateway 接続) =====
+    private static void run(Path configPath) throws Exception {
+        Config config = Config.load(configPath, true);
+        Path dataPath = Path.of(config.databasePath);
+        Store store = new Store(dataPath);
+        StarFeatures features = new StarFeatures(store, Clock.systemUTC(), new SecureRandom());
+        List<GatewayClient> clients = new ArrayList<>();
+        CountDownLatch latch = new CountDownLatch(1);
+        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+            clients.forEach(GatewayClient::stop);
+            latch.countDown();
+        }));
+
+        for (String botId : Config.REQUIRED_BOTS) {
+            Config.Bot bot = config.bots.get(botId);
+            DiscordRest rest = new DiscordRest(botId, bot.applicationId, bot.token);
+            if ("general".equals(botId)) {
+                StarHandler handler = new StarHandler(store, features, rest);
+                GatewayClient client = new GatewayClient(bot, event -> {
+                    try {
+                        handler.handleEvent(new StarHandler.Event(event.eventId(), event.eventType(), event.payload()));
+                    } catch (Exception e) {
+                        System.err.println("[general] event handling failed: " + e.getMessage());
+                    }
+                }, System.out::println);
+                clients.add(client);
+            } else {
+                ReadAloud.ReadAloudService service = new ReadAloud.ReadAloudService(
+                        store, new ReadAloud.VoiceVoxClient(config.voicevoxBaseUrl),
+                        new ReadAloud.LogVoiceTransport(System.out::println), System.out::println, true);
+                GatewayClient client = new GatewayClient(bot, event -> handleReadAloudEvent(service, rest, event),
+                        System.out::println);
+                clients.add(client);
+            }
+        }
+        clients.forEach(GatewayClient::start);
+        System.out.println("p1228-java started: 3 bots connecting (Gateway実接続はこのVMでは未検証)");
+        latch.await();
+    }
+
+    private static void handleReadAloudEvent(ReadAloud.ReadAloudService service, DiscordRest rest,
+                                             GatewayClient.GatewayEvent event) {
+        try {
+            if (event.eventType().equals("INTERACTION_CREATE")) {
+                StarHandler.Interaction interaction = StarHandler.Interaction.fromPayload(event.payload());
+                if (interaction.type != 2) return;
+                switch (interaction.commandName) {
+                    case "join" -> {
+                        String channelId = interaction.optionString("channel");
+                        if (channelId.isBlank()) {
+                            rest.reply(interaction, "接続先ボイスチャンネルを指定してください。");
+                            return;
+                        }
+                        service.join(interaction.guildId, channelId);
+                        rest.reply(interaction, "ボイスチャンネルへの接続要求を送信しました。");
+                    }
+                    case "leave" -> {
+                        service.leave(interaction.guildId);
+                        rest.reply(interaction, "ボイスチャンネルから退出しました。");
+                    }
+                    case "say" -> {
+                        String text = interaction.optionString("text");
+                        if (text.isBlank()) {
+                            rest.reply(interaction, "読み上げる文章を入力してください。");
+                            return;
+                        }
+                        service.speak(interaction.guildId, text, interaction.userId);
+                        rest.reply(interaction, "読み上げキューに追加しました。");
+                    }
+                    default -> rest.reply(interaction, "未実装のコマンドです: " + interaction.commandName);
+                }
+            } else if (event.eventType().equals("MESSAGE_CREATE")) {
+                Map<String, Object> message = event.payload();
+                Map<String, Object> author = Json.obj(message.get("author"));
+                if (Json.bool(author.get("bot"))) return;
+                service.maybeReadMessage(Json.str(message.get("guild_id")), Json.str(author.get("id")),
+                        Json.str(message.get("content")));
+            }
+            // VOICE_STATE_UPDATE / VOICE_SERVER_UPDATE は実転送 (VoiceTransport)
+            // 実装時にここでルーティングする。現行は LogVoiceTransport のため不要。
+        } catch (Exception e) {
+            System.err.println("[read-aloud] event handling failed: " + e.getMessage());
+        }
+    }
+
+    // ===== 5. demo (オフライン模擬実行) =====
+    // ----- 5.1 フェイク DiscordOps -----
+    static final class FakeOps implements StarHandler.DiscordOps {
+        final List<String> actions = new ArrayList<>();
+        private int messageCounter = 0;
+
+        @Override
+        public String sendMessage(String channelId, String content, Object components, String operationId) {
+            String id = "demo-msg-" + (++messageCounter);
+            actions.add("SEND channel=" + channelId + " id=" + id + " content=" + content
+                    + (components != null ? " components=" + Json.stringify(components) : ""));
+            return id;
+        }
+
+        @Override
+        public void deleteMessage(String channelId, String messageId, String operationId) {
+            actions.add("DELETE channel=" + channelId + " message=" + messageId);
+        }
+
+        @Override
+        public void addRole(String guildId, String userId, String roleId, String operationId) {
+            actions.add("ADD_ROLE guild=" + guildId + " user=" + userId + " role=" + roleId);
+        }
+
+        @Override
+        public void removeRole(String guildId, String userId, String roleId, String operationId) {
+            actions.add("REMOVE_ROLE guild=" + guildId + " user=" + userId + " role=" + roleId);
+        }
+
+        @Override
+        public void reply(StarHandler.Interaction interaction, String content) {
+            actions.add("REPLY command=" + interaction.commandName + " content=" + content);
+        }
+
+        @Override
+        public void ackComponent(StarHandler.Interaction interaction) {
+            actions.add("ACK_COMPONENT custom_id=" + interaction.customId);
+        }
+
+        @Override
+        public void followup(StarHandler.Interaction interaction, String content) {
+            actions.add("FOLLOWUP content=" + content);
+        }
+
+        void printAll() {
+            actions.forEach(a -> System.out.println("  " + a));
+        }
+    }
+
+    private static Map<String, Object> interactionPayload(String id, String name, String subcommand,
+                                                          Map<String, ?> options, String permissions) {
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("id", id);
+        payload.put("application_id", "demo-app");
+        payload.put("type", 2L);
+        payload.put("token", "demo-token");
+        payload.put("guild_id", "g1");
+        payload.put("channel_id", "ch-general");
+        Map<String, Object> user = new LinkedHashMap<>();
+        user.put("id", "u-admin");
+        user.put("username", "admin");
+        Map<String, Object> member = new LinkedHashMap<>();
+        member.put("user", user);
+        member.put("permissions", permissions);
+        payload.put("member", member);
+        Map<String, Object> data = new LinkedHashMap<>();
+        data.put("name", name);
+        List<Object> opts = new ArrayList<>();
+        if (subcommand != null) {
+            Map<String, Object> sub = new LinkedHashMap<>();
+            sub.put("name", subcommand);
+            sub.put("type", 1L);
+            List<Object> subOpts = new ArrayList<>();
+            options.forEach((k, v) -> {
+                Map<String, Object> o = new LinkedHashMap<>();
+                o.put("name", k);
+                o.put("type", v instanceof Number ? 4L : 3L);
+                o.put("value", v);
+                subOpts.add(o);
+            });
+            sub.put("options", subOpts);
+            opts.add(sub);
+        } else {
+            options.forEach((k, v) -> {
+                Map<String, Object> o = new LinkedHashMap<>();
+                o.put("name", k);
+                o.put("type", v instanceof Number ? 4L : 3L);
+                o.put("value", v);
+                opts.add(o);
+            });
+        }
+        data.put("options", opts);
+        payload.put("data", data);
+        return payload;
+    }
+
+    private static void runDemo() throws Exception {
+        System.out.println("===== p1228-java demo (オフライン模擬実行) =====");
+        Path dir = Files.createTempDirectory("p1228-demo");
+        Store store = new Store(dir.resolve("store.json"));
+        Clock fixed = Clock.fixed(Instant.parse("2026-11-17T10:00:00Z"), ZoneOffset.UTC);
+        StarFeatures features = new StarFeatures(store, fixed, new Random(42));
+        FakeOps ops = new FakeOps();
+        StarHandler handler = new StarHandler(store, features, ops);
+        String admin = "8"; // ADMINISTRATOR
+
+        System.out.println("-- 1. GUILD_CREATE (サーバー: デモサーバー) --");
+        Map<String, Object> guild = new LinkedHashMap<>();
+        guild.put("id", "g1");
+        guild.put("name", "デモサーバー");
+        Map<String, Object> vc = new LinkedHashMap<>();
+        vc.put("id", "vc1");
+        vc.put("type", 2L);
+        vc.put("parent_id", "cat1");
+        guild.put("channels", List.of(vc));
+        handler.handleEvent(new StarHandler.Event("ev-guild", "GUILD_CREATE", guild));
+
+        System.out.println("-- 2. 管理コマンド: welcome / autorole / logs / sticky / shop add --");
+        handler.handleEvent(new StarHandler.Event("i1", "INTERACTION_CREATE",
+                interactionPayload("i1", "welcome", "set", Map.of("channel", "ch-welcome", "message", "{user} さん、{server} へようこそ！"), admin)));
+        handler.handleEvent(new StarHandler.Event("i2", "INTERACTION_CREATE",
+                interactionPayload("i2", "autorole", "set", Map.of("role", "role-member"), admin)));
+        handler.handleEvent(new StarHandler.Event("i3", "INTERACTION_CREATE",
+                interactionPayload("i3", "logs", "set", Map.of("event", "voice", "channel", "ch-log"), admin)));
+        handler.handleEvent(new StarHandler.Event("i4", "INTERACTION_CREATE",
+                interactionPayload("i4", "sticky", "set", Map.of("channel", "ch-general", "message", "📌 固定メッセージです"), admin)));
+        handler.handleEvent(new StarHandler.Event("i5", "INTERACTION_CREATE",
+                interactionPayload("i5", "shop", "add", Map.of("item_id", "vip", "name", "VIPロール", "price", 30L, "role", "role-vip"), admin)));
+
+        System.out.println("-- 3. メンバー参加 (welcome + autorole) --");
+        Map<String, Object> join = new LinkedHashMap<>();
+        join.put("guild_id", "g1");
+        Map<String, Object> joinUser = new LinkedHashMap<>();
+        joinUser.put("id", "u1");
+        joinUser.put("username", "taro");
+        join.put("user", joinUser);
+        join.put("roles", List.of());
+        handler.handleEvent(new StarHandler.Event("ev-join", "GUILD_MEMBER_ADD", join));
+
+        System.out.println("-- 4. メッセージ投稿 x2 (ポイント獲得 + sticky再投稿) --");
+        for (int i = 1; i <= 2; i++) {
+            Map<String, Object> msg = new LinkedHashMap<>();
+            msg.put("id", "m" + i);
+            msg.put("guild_id", "g1");
+            msg.put("channel_id", "ch-general");
+            Map<String, Object> author = new LinkedHashMap<>();
+            author.put("id", "u1");
+            author.put("username", "taro");
+            msg.put("author", author);
+            msg.put("content", "こんにちは " + i);
+            handler.handleEvent(new StarHandler.Event("ev-msg-" + i, "MESSAGE_CREATE", msg));
+        }
+        System.out.println("  ポイント残高 (u1): " + features.getPointAccount("g1", "u1").balance() + " pt (クールダウン60秒のため2件目は0pt)");
+
+        System.out.println("-- 5. 一般コマンド: points / omikuji / shop list --");
+        Map<String, Object> userPayload = interactionPayload("i6", "points", null, Map.of(), "0");
+        Json.obj(userPayload.get("member")).put("user", Map.of("id", "u1", "username", "taro"));
+        handler.handleEvent(new StarHandler.Event("i6", "INTERACTION_CREATE", userPayload));
+        Map<String, Object> omikujiPayload = interactionPayload("i7", "omikuji", null, Map.of(), "0");
+        Json.obj(omikujiPayload.get("member")).put("user", Map.of("id", "u1", "username", "taro"));
+        handler.handleEvent(new StarHandler.Event("i7", "INTERACTION_CREATE", omikujiPayload));
+        handler.handleEvent(new StarHandler.Event("i8", "INTERACTION_CREATE",
+                interactionPayload("i8", "shop", "list", Map.of(), "0")));
+
+        System.out.println("-- 6. VC参加ログ --");
+        Map<String, Object> voice = new LinkedHashMap<>();
+        voice.put("guild_id", "g1");
+        voice.put("user_id", "u1");
+        voice.put("channel_id", "vc1");
+        handler.handleEvent(new StarHandler.Event("ev-voice", "VOICE_STATE_UPDATE", voice));
+
+        System.out.println("-- 7. 読み上げ (LogVoiceTransport + フェイク合成) --");
+        ReadAloud.ReadAloudService service = new ReadAloud.ReadAloudService(store,
+                (text, settings) -> new byte[44],
+                new ReadAloud.LogVoiceTransport(System.out::println), System.out::println, false);
+        store.putReadAloudSettings("global", "global", Map.<String, Object>of("enabled", true));
+        service.join("g1", "vc1");
+        service.speak("g1", "テスト読み上げです https://example.com は省略されます", "u1");
+        service.leave("g1");
+
+        System.out.println();
+        System.out.println("===== DiscordOps へ送られた操作 (" + ops.actions.size() + "件) =====");
+        ops.printAll();
+        System.out.println("===== demo 終了: すべてオフラインで実行されました =====");
+    }
+}

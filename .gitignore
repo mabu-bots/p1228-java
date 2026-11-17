@@ -1,0 +1,6 @@
+out/
+p1228.jar
+data/
+.env
+sources.txt
+*.class
