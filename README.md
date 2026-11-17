@@ -47,8 +47,8 @@
 
 ```bash
 cd p1228-java
-./build.sh          # コンパイル (out/ と p1228.jar を生成)
-./run.sh test       # 単体テスト (82件・ネットワーク不要)
+./build.sh          # フルビルド: クリーンコンパイル+単体テスト+p1228.jar生成 (Windows は build.bat)
+./run.sh test       # 単体テストのみ (82件・ネットワーク不要。build.sh でも実行されます)
 ./run.sh commands   # BOTごとの Slash コマンド定義JSONを表示 (オフライン)
 ./run.sh demo       # フェイクDiscordで星燈機能を一通り動かす (オフライン)
 ```
@@ -101,7 +101,7 @@ cd p1228-java
 p1228-java/
   DESIGN.md / README.md
   config.json / .env.example
-  build.sh / run.sh
+  build.sh / build.bat / run.sh
   src/main/java/p1228/
     Main.java          CLI (run / sync-commands / commands / demo)
     Json.java          軽量JSONパーサ/生成 (依存ゼロのため自作)
