@@ -1,0 +1,8 @@
+# ===== 1. Welcome Bot の設定 =====
+# 初めて Issue / PR を作った人への自動コメント (behaviorbot/welcome)
+newIssueWelcomeComment: >
+  Issue の作成ありがとうございます！内容を確認しますので、しばらくお待ちください。
+newPRWelcomeComment: >
+  プルリクエストありがとうございます！内容を確認しますので、しばらくお待ちください。
+firstPRMergeComment: >
+  初めてのプルリクエストがマージされました。ありがとうございます！

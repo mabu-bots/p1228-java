@@ -1,0 +1,15 @@
+# ===== 1. Dependabot PR の自動マージ =====
+# 全チェックが成功した Dependabot PR だけを自動でマージする。
+# TypeScript と @types/node のメジャー更新は、影響が大きいため手動確認に残す。
+pull_request_rules:
+  - name: Dependabot の更新を自動マージ
+    conditions:
+      - base=main
+      - author=dependabot[bot]
+      - "#check-failure=0"
+      - "#check-pending=0"
+      - -title~=typescript
+      - -title~=@types/node
+    actions:
+      merge:
+        method: merge
