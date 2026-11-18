@@ -399,7 +399,6 @@ public final class StarHandler {
         if (detail.contains("omikuji already drawn today")) return "おみくじは本日すでに引いています。";
         if (detail.contains("shop item already owned")) return "この商品はすでに購入済みです。";
         if (detail.contains("shop item not found")) return "商品が見つかりません。";
-        if (detail.contains("no rows in result set")) return "商品が見つかりません。";
         return null;
     }
 

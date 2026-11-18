@@ -11,7 +11,9 @@ import java.util.UUID;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
 
 // ===== 1. GatewayClient (Discord Gateway WebSocket クライアント) =====
@@ -40,6 +42,8 @@ public final class GatewayClient {
     });
 
     private volatile WebSocket webSocket;
+    private volatile ScheduledFuture<?> heartbeatTask;
+    private final AtomicBoolean reconnectScheduled = new AtomicBoolean(false);
     private volatile boolean running = false;
     private volatile long sequence = -1;
     private volatile String sessionId = null;
@@ -102,12 +106,16 @@ public final class GatewayClient {
 
     private void scheduleReconnect() {
         if (!running) return;
+        // onClose と onError の両方から呼ばれ得るため、予約済みなら二重に予約しない
+        if (!reconnectScheduled.compareAndSet(false, true)) return;
         // 再接続間隔は指数バックオフ (1, 2, 4, 8, 16 秒のあと最大30秒で頭打ち)
         long delaySeconds = Math.min(30, 1L << Math.min(reconnectAttempts, 5));
         reconnectAttempts++;
         logger.accept("[gateway:" + bot.id + "] reconnecting in " + delaySeconds + "s");
-        scheduler.schedule(() -> connect(sessionId != null && resumeGatewayUrl != null ? resumeGatewayUrl : gatewayUrl),
-                delaySeconds, TimeUnit.SECONDS);
+        scheduler.schedule(() -> {
+            reconnectScheduled.set(false);
+            connect(sessionId != null && resumeGatewayUrl != null ? resumeGatewayUrl : gatewayUrl);
+        }, delaySeconds, TimeUnit.SECONDS);
     }
 
     private void send(Map<String, Object> payload) {
@@ -155,7 +163,11 @@ public final class GatewayClient {
     }
 
     private void startHeartbeat(long intervalMillis) {
-        scheduler.scheduleAtFixedRate(() -> {
+        // Hello のたびに呼ばれるため、前回の定期タスクが残っていれば
+        // 先にキャンセルする (再接続を繰り返しても多重送信にならないように)。
+        ScheduledFuture<?> previous = heartbeatTask;
+        if (previous != null) previous.cancel(false);
+        heartbeatTask = scheduler.scheduleAtFixedRate(() -> {
             Map<String, Object> payload = new LinkedHashMap<>();
             payload.put("op", 1L);
             payload.put("d", sequence < 0 ? null : sequence);
@@ -163,7 +175,8 @@ public final class GatewayClient {
         }, intervalMillis, intervalMillis, TimeUnit.MILLISECONDS);
     }
 
-    // Voice State Update (op 4)。読み上げBOTの /join が使う。
+    // Voice State Update (op 4)。原本の /join が Gateway 経由で送る操作。
+    // 単一JVM構成の現行コードに呼び出し元は無いが、原本との対応を保つため残す。
     public void updateVoiceState(String guildId, String channelId) {
         Map<String, Object> d = new LinkedHashMap<>();
         d.put("guild_id", guildId);

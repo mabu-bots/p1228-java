@@ -269,6 +269,8 @@ public final class StarFeatures {
                 }
                 // 購入時点のロールを保持する。カタログ側が後で編集・無効化
                 // されても pending の再試行は追加課金なしで継続できる。
+                // ただし商品自体がカタログから消えた場合は、上の取得時点で
+                // "shop item not found" となり再試行できない。
                 Store.ShopItem purchased = new Store.ShopItem();
                 purchased.itemId = item.itemId;
                 purchased.name = item.name;

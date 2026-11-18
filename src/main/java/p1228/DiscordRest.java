@@ -25,6 +25,10 @@ public final class DiscordRest implements StarHandler.DiscordOps {
 
     public static final String API_BASE = "https://discord.com/api/v10";
 
+    // 冪等キャッシュの上限。際限なく増えないよう、上限到達時は古い結果ごと
+    // まとめて破棄する (重複排除できなくなるのは十分に古い operation_id だけ)。
+    private static final int OPERATION_CACHE_LIMIT = 1000;
+
     private final String botId;
     private final String applicationId;
     private final String token;
@@ -81,6 +85,8 @@ public final class DiscordRest implements StarHandler.DiscordOps {
                 if (fields.get("components") != null) body.put("components", fields.get("components"));
                 yield request("POST", "/channels/" + Json.str(fields.get("channel_id")) + "/messages", body);
             }
+            // edit_message は DiscordOps 経由の呼び出し元が現状無いが、
+            // 原本の許可リスト (6操作) と一致させるため残している。
             case "edit_message" -> {
                 Map<String, Object> body = new LinkedHashMap<>();
                 body.put("content", Json.str(fields.get("content")));
@@ -96,7 +102,10 @@ public final class DiscordRest implements StarHandler.DiscordOps {
                     "/guilds/" + Json.str(fields.get("guild_id")) + "/members/" + Json.str(fields.get("user_id")) + "/roles/" + Json.str(fields.get("role_id")), null);
             default -> throw new IllegalArgumentException("operation is not allowlisted: " + operation);
         };
-        if (operationId != null && !operationId.isBlank()) operationCache.put(operationId, result);
+        if (operationId != null && !operationId.isBlank()) {
+            if (operationCache.size() >= OPERATION_CACHE_LIMIT) operationCache.clear();
+            operationCache.put(operationId, result);
+        }
         return result;
     }
 
