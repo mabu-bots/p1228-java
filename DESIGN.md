@@ -12,22 +12,22 @@
 
 ## 2. 対応表 (原本 → Java版)
 
-| 原本 | Java版 | 備考 |
-| --- | --- | --- |
-| Go Gateway (プロセス) + TS Worker ×3 (プロセス) | 単一JVM・単一プロセス (`Main.run`) | BOT 3体の役割とコード境界は維持 |
-| `gateway/internal/config/config.go` + `config/gateway.yaml` | `Config.java` + `config.json` | 検証規則を移植。`${ENV}` 展開、既定値、strict/lenient の2モード |
-| `gateway/internal/discord/gateway.go` | `GatewayClient.java` | `java.net.http.WebSocket`。Hello/Heartbeat/Identify/Resume/再接続 |
-| Gateway の DiscordOperation (内部API経由) | `DiscordRest.java` | 許可リスト6操作は同一。`operation_id` 冪等キャッシュも維持 |
-| Interaction 応答 (`interaction_ref` 経由) | Discord Interaction Callback / Webhook へ直接REST | 単一JVMでは中継が不要なための置換 |
-| SQLite (`modernc.org/sqlite`、マイグレーション4本) | ファイルベース `Store.java` (`data/store.json`) | 標準ライブラリに SQLite ドライバがないための置換。全変更を synchronized + アトミック書換 |
-| `gateway/internal/storage/star_features.go` | `StarFeatures.java` | 意味論を忠実に移植。Clock / Random 注入で決定的テスト可能に |
-| `workers/src/general/star-features.ts` | `StarHandler.java` + `Commands.java` | GatewayClient 依存を `DiscordOps` インターフェースに置換しフェイクで検証 |
-| `workers/src/sync-commands.ts` | `Commands.java` + `Main` の `commands` / `sync-commands` | BOTごとの定義振り分けは同一 |
-| `workers/src/read-aloud/index.ts` / `voice/service.ts` | `ReadAloud.ReadAloudService` | join/leave/say、メッセージ読み上げ判定、ギルド別キュー (上限50) |
-| `workers/src/read-aloud/audio/engine.ts` | `ReadAloud.VoiceVoxClient` | `/audio_query` → `/synthesis` の2段階は同一。音声キャッシュは未実装 |
-| `@discordjs/voice` (UDP/Opus/DAVE) | `ReadAloud.VoiceTransport` 境界 + `LogVoiceTransport` | **実転送は未実装** (標準ライブラリ対象外)。原本も E2E 未検証 |
-| Worker Heartbeat / Presence 障害表示 | 未実装 | 単一プロセスでは Worker 障害の概念がないため。Gateway 切断時は再接続バックオフのみ |
-| イベント Inbox / リース / ACK / Dead Letter | 未実装 | プロセス内直接配送に置換。冪等性は台帳・star_feature_actions 相当の記録で担保 |
+| 原本                                                        | Java版                                                   | 備考                                                                                     |
+| ----------------------------------------------------------- | -------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| Go Gateway (プロセス) + TS Worker ×3 (プロセス)             | 単一JVM・単一プロセス (`Main.run`)                       | BOT 3体の役割とコード境界は維持                                                          |
+| `gateway/internal/config/config.go` + `config/gateway.yaml` | `Config.java` + `config.json`                            | 検証規則を移植。`${ENV}` 展開、既定値、strict/lenient の2モード                          |
+| `gateway/internal/discord/gateway.go`                       | `GatewayClient.java`                                     | `java.net.http.WebSocket`。Hello/Heartbeat/Identify/Resume/再接続                        |
+| Gateway の DiscordOperation (内部API経由)                   | `DiscordRest.java`                                       | 許可リスト6操作は同一。`operation_id` 冪等キャッシュも維持                               |
+| Interaction 応答 (`interaction_ref` 経由)                   | Discord Interaction Callback / Webhook へ直接REST        | 単一JVMでは中継が不要なための置換                                                        |
+| SQLite (`modernc.org/sqlite`、マイグレーション4本)          | ファイルベース `Store.java` (`data/store.json`)          | 標準ライブラリに SQLite ドライバがないための置換。全変更を synchronized + アトミック書換 |
+| `gateway/internal/storage/star_features.go`                 | `StarFeatures.java`                                      | 意味論を忠実に移植。Clock / Random 注入で決定的テスト可能に                              |
+| `workers/src/general/star-features.ts`                      | `StarHandler.java` + `Commands.java`                     | GatewayClient 依存を `DiscordOps` インターフェースに置換しフェイクで検証                 |
+| `workers/src/sync-commands.ts`                              | `Commands.java` + `Main` の `commands` / `sync-commands` | BOTごとの定義振り分けは同一                                                              |
+| `workers/src/read-aloud/index.ts` / `voice/service.ts`      | `ReadAloud.ReadAloudService`                             | join/leave/say、メッセージ読み上げ判定、ギルド別キュー (上限50)                          |
+| `workers/src/read-aloud/audio/engine.ts`                    | `ReadAloud.VoiceVoxClient`                               | `/audio_query` → `/synthesis` の2段階は同一。音声キャッシュは未実装                      |
+| `@discordjs/voice` (UDP/Opus/DAVE)                          | `ReadAloud.VoiceTransport` 境界 + `LogVoiceTransport`    | **実転送は未実装** (標準ライブラリ対象外)。原本も E2E 未検証                             |
+| Worker Heartbeat / Presence 障害表示                        | 未実装                                                   | 単一プロセスでは Worker 障害の概念がないため。Gateway 切断時は再接続バックオフのみ       |
+| イベント Inbox / リース / ACK / Dead Letter                 | 未実装                                                   | プロセス内直接配送に置換。冪等性は台帳・star_feature_actions 相当の記録で担保            |
 
 ## 3. ゲーム・ショップ意味論の移植ポイント
 
