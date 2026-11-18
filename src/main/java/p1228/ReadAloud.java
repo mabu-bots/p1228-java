@@ -46,7 +46,8 @@ public final class ReadAloud {
         }
     }
 
-    // Global → Guild → User の順で適用する。下位スコープに無いキーは
+    // Global → Guild → User の順で適用し、後から適用するスコープの値が
+    // 優先される。ただし、あるスコープに無いキーは前のスコープの値を
     // 上書きしない (原本 service.ts の getSettings と同じ意味論)。
     public static Settings mergeSettings(List<Map<String, Object>> scopesInOrder) {
         Settings result = new Settings();
@@ -300,6 +301,7 @@ public final class ReadAloud {
 
         // キューを1件ずつ処理する。1件の失敗で後続を止めない (原本と同方針)。
         public void drain(String guildId) {
+            // 同一ギルドの drain は同時に1つだけ動かす (非同期投入が重なっても二重処理しない)
             synchronized (this) {
                 if (processing.contains(guildId)) return;
                 processing.add(guildId);

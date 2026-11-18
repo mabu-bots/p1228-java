@@ -95,7 +95,7 @@ cd p1228-java
 | [DESIGN.md](./DESIGN.md) | 原本 Go/TS → Java の対応表、置換の判断と理由 |
 | `config.json` / `.env.example` | 設定 (原本 `gateway.yaml` / `.env` 相当) |
 
-## 構成
+## 📂 構成
 
 ```
 p1228-java/

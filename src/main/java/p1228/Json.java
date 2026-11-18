@@ -8,7 +8,8 @@ import java.util.Map;
 // ===== 1. Json (軽量JSONパーサ/生成・外部依存なし) =====
 // aegis-java の Json.java を土台に、任意の Map/List 構造を書き出す
 // stringify と数値ヘルパーを追加したもの。値は Map/List/String/Long/
-// Double/Boolean/null で表現する。
+// Double/Boolean/null で表現する。パーサは寛容な実装で、入力の厳密な
+// 検証は行わず、読めない数値は 0 として扱うなど、可能な範囲で値を返す。
 public final class Json {
     private final String s;
     private int pos;

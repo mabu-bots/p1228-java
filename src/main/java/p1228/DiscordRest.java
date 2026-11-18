@@ -151,9 +151,9 @@ public final class DiscordRest implements StarHandler.DiscordOps {
     public void reply(StarHandler.Interaction interaction, String content) throws Exception {
         Map<String, Object> data = new LinkedHashMap<>();
         data.put("content", content);
-        data.put("flags", 64L);
+        data.put("flags", 64L); // 64 = EPHEMERAL (実行した本人にだけ表示)
         Map<String, Object> body = new LinkedHashMap<>();
-        body.put("type", 4L);
+        body.put("type", 4L); // 4 = CHANNEL_MESSAGE_WITH_SOURCE (即時返信)
         body.put("data", data);
         request("POST", "/interactions/" + interaction.id + "/" + interaction.token + "/callback", body);
     }
@@ -161,7 +161,7 @@ public final class DiscordRest implements StarHandler.DiscordOps {
     @Override
     public void ackComponent(StarHandler.Interaction interaction) throws Exception {
         Map<String, Object> body = new LinkedHashMap<>();
-        body.put("type", 6L);
+        body.put("type", 6L); // 6 = DEFERRED_UPDATE_MESSAGE (元のメッセージは変更せず応答だけ済ませる)
         request("POST", "/interactions/" + interaction.id + "/" + interaction.token + "/callback", body);
     }
 
@@ -170,7 +170,7 @@ public final class DiscordRest implements StarHandler.DiscordOps {
         String appId = !interaction.applicationId.isBlank() ? interaction.applicationId : applicationId;
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("content", content);
-        body.put("flags", 64L);
+        body.put("flags", 64L); // 64 = EPHEMERAL (実行した本人にだけ表示)
         request("POST", "/webhooks/" + appId + "/" + interaction.token, body);
     }
 }

@@ -451,6 +451,10 @@ public final class StarHandler {
     }
 
     // ----- 5.2 スティッキーの移動 -----
+    // 保存済みの message_id は、まず空文字へ条件付きで差し替えてから旧メッセージを
+    // 削除し、新規投稿する。呼び出し側は戻り値の新IDを、expectedOld="" の
+    // 条件付き更新で保存する (一連の流れで「現在のIDが期待どおりのときだけ
+    // 差し替える」ことで、競合する再投稿同士の上書きを防ぐ)。
     public String moveSticky(Store.StickyMessage sticky, String eventId) throws Exception {
         String oldMessageId = sticky.messageId;
         if (oldMessageId != null && !oldMessageId.isBlank()) {

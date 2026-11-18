@@ -66,9 +66,11 @@ public final class Config {
 
     // ----- 1.2 .env と環境変数の解決 -----
     public static Map<String, String> loadEnv(Path configDir) {
+        // 実際の環境変数を土台にし、.env は未設定のキーだけを補う
+        // (putIfAbsent で読み込むため、環境変数が常に優先される)。
         Map<String, String> env = new HashMap<>(System.getenv());
         Path dotEnv = configDir == null ? Path.of(".env") : configDir.resolve(".env");
-        // プロジェクト直下の .env も見る
+        // 設定ファイルと同じフォルダの .env を優先し、無ければカレントディレクトリの .env を見る (最初に見つかった1つだけを読む)
         for (Path candidate : new Path[]{dotEnv, Path.of(".env")}) {
             if (candidate != null && Files.isRegularFile(candidate)) {
                 try {

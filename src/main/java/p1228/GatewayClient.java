@@ -102,6 +102,7 @@ public final class GatewayClient {
 
     private void scheduleReconnect() {
         if (!running) return;
+        // 再接続間隔は指数バックオフ (1, 2, 4, 8, 16 秒のあと最大30秒で頭打ち)
         long delaySeconds = Math.min(30, 1L << Math.min(reconnectAttempts, 5));
         reconnectAttempts++;
         logger.accept("[gateway:" + bot.id + "] reconnecting in " + delaySeconds + "s");
@@ -177,6 +178,7 @@ public final class GatewayClient {
 
     // ===== 3. 受信処理 =====
     private final class Listener implements WebSocket.Listener {
+        // テキストフレームは分割されて届くことがあるため、last=true まで連結してから解釈する
         private final StringBuilder buffer = new StringBuilder();
 
         @Override
