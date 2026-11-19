@@ -47,7 +47,37 @@ public final class DiscordRest implements StarHandler.DiscordOps {
     }
 
     // ===== 2. 低レベルリクエスト =====
-    private Map<String, Object> request(String method, String path, Object body) throws Exception {
+    // 429 (レート制限) のときは retry_after だけ待って1回だけ再試行する
+    // (レビューM-3)。待機は最大5秒に抑え、インタラクション応答の
+    // 制限時間 (初回応答3秒・トークン有効15分) を大きく圧迫しないようにする。
+    static long clampRetryDelayMillis(double retryAfterSeconds) {
+        if (retryAfterSeconds < 0 || Double.isNaN(retryAfterSeconds)) retryAfterSeconds = 1.0;
+        return Math.min(5000L, (long) (retryAfterSeconds * 1000));
+    }
+
+    private static long retryDelayMillis(HttpResponse<String> response) {
+        Object value = null;
+        String text = response.body();
+        if (text != null && !text.isBlank()) {
+            try {
+                value = Json.obj(Json.parse(text)).get("retry_after");
+            } catch (Exception ignored) {
+                // ボディが読めなければヘッダにフォールバックする
+            }
+        }
+        if (value instanceof Number n) return clampRetryDelayMillis(n.doubleValue());
+        var header = response.headers().firstValue("Retry-After");
+        if (header.isPresent()) {
+            try {
+                return clampRetryDelayMillis(Double.parseDouble(header.get()));
+            } catch (Exception ignored) {
+                // 解釈できなければ既定の待機を使う
+            }
+        }
+        return clampRetryDelayMillis(-1);
+    }
+
+    private HttpResponse<String> sendOnce(String method, String path, Object body) throws Exception {
         HttpRequest.Builder builder = HttpRequest.newBuilder()
                 .uri(URI.create(API_BASE + path))
                 .timeout(Duration.ofSeconds(30))
@@ -59,7 +89,15 @@ public final class DiscordRest implements StarHandler.DiscordOps {
         } else {
             builder.method(method, HttpRequest.BodyPublishers.noBody());
         }
-        HttpResponse<String> response = client.send(builder.build(), HttpResponse.BodyHandlers.ofString());
+        return client.send(builder.build(), HttpResponse.BodyHandlers.ofString());
+    }
+
+    private Map<String, Object> request(String method, String path, Object body) throws Exception {
+        HttpResponse<String> response = sendOnce(method, path, body);
+        if (response.statusCode() == 429) {
+            Thread.sleep(retryDelayMillis(response));
+            response = sendOnce(method, path, body);
+        }
         if (response.statusCode() < 200 || response.statusCode() >= 300) {
             throw new IllegalStateException("Discord REST " + method + " " + path + " failed: HTTP " + response.statusCode());
         }

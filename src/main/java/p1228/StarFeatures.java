@@ -89,6 +89,37 @@ public final class StarFeatures {
         store.pointLedger.put(eventKey, entry);
     }
 
+    // ----- 1.2 冪等記録の保持上限 (レビューM-1) -----
+    // 台帳・アクション記録はインタラクション再送や Resume 再生への備えで、
+    // 保持すべきは直近分だけでよい。上限なく増え続けると store.json が
+    // 肥大化し保存も重くなるため、上限を超えたら古いものから間引く
+    // (LinkedHashMap の挿入順 = 古い順)。
+    static final int IDEMPOTENCY_CACHE_LIMIT = 5000;
+
+    private static void trimOldest(Map<String, ?> map) {
+        if (map.size() <= IDEMPOTENCY_CACHE_LIMIT) return;
+        var iterator = map.keySet().iterator();
+        while (map.size() > IDEMPOTENCY_CACHE_LIMIT && iterator.hasNext()) {
+            iterator.next();
+            iterator.remove();
+        }
+    }
+
+    private void afterIdempotentWrite() {
+        trimOldest(store.pointLedger);
+        trimOldest(store.starActions);
+    }
+
+    // おみくじ記録のキーは guild|user|日付(UTC) で、当日分以外は判定に
+    // 使わないため、7日より古い日付分を間引く。
+    private void pruneOldOmikujiDraws() {
+        String cutoff = LocalDate.ofInstant(now(), ZoneOffset.UTC).minusDays(7).toString();
+        store.omikujiDraws.keySet().removeIf(k -> {
+            int sep = k.lastIndexOf('|');
+            return sep >= 0 && k.substring(sep + 1).compareTo(cutoff) < 0;
+        });
+    }
+
     // ===== 2. ポイント獲得 =====
     public Store.PointResult getPointAccount(String guildId, String userId) {
         synchronized (store) {
@@ -128,7 +159,12 @@ public final class StarFeatures {
                     earned = grant;
                 }
             }
-            store.save();
+            // 状態が変わったときだけ保存する (レビューM-1)。クールダウン等で
+            // 獲得0の回まで毎回 store.json 全体を書き直すのは無駄なため。
+            if (earned > 0) {
+                trimOldest(store.pointLedger);
+                store.save();
+            }
             return new Store.PointResult(account.balance, earned);
         }
     }
@@ -166,6 +202,7 @@ public final class StarFeatures {
             resultJson.put("points", pointsJson);
             resultJson.put("won", won);
             store.starActions.put("lottery:" + eventId, Json.stringify(resultJson));
+            afterIdempotentWrite();
             store.save();
             return new LotteryResult(new Store.PointResult(account.balance, 0), won);
         }
@@ -194,6 +231,8 @@ public final class StarFeatures {
             Map<String, Object> resultJson = new LinkedHashMap<>();
             resultJson.put("fortune", fortune);
             store.starActions.put("omikuji:" + eventId, Json.stringify(resultJson));
+            pruneOldOmikujiDraws();
+            afterIdempotentWrite();
             store.save();
             return fortune;
         }
@@ -308,6 +347,7 @@ public final class StarFeatures {
             resultJson.put("points", pointsJson);
             resultJson.put("role_pending", true);
             store.starActions.put("shop:" + eventId, Json.stringify(resultJson));
+            afterIdempotentWrite();
             store.save();
             Store.ShopItem purchased = new Store.ShopItem();
             purchased.itemId = item.itemId;

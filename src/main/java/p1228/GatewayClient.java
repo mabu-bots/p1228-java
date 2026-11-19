@@ -43,6 +43,33 @@ public final class GatewayClient {
 
     private volatile WebSocket webSocket;
     private volatile ScheduledFuture<?> heartbeatTask;
+    private final HeartbeatMonitor heartbeatMonitor = new HeartbeatMonitor();
+
+    // ハートビートの送信とACK受信を監視し、ACKが途絶えた接続 (半死状態) を
+    // 検知する (レビューM-2)。前回送信分が未ACKのまま1インターバル
+    // 経過したらゾンビとみなす。
+    static final class HeartbeatMonitor {
+        private long lastSentAtMillis = -1;
+        private boolean acked = true;
+
+        synchronized void onSend(long nowMillis) {
+            lastSentAtMillis = nowMillis;
+            acked = false;
+        }
+
+        synchronized void onAck() {
+            acked = true;
+        }
+
+        synchronized void reset() {
+            lastSentAtMillis = -1;
+            acked = true;
+        }
+
+        synchronized boolean isZombie(long nowMillis, long intervalMillis) {
+            return lastSentAtMillis >= 0 && !acked && nowMillis - lastSentAtMillis >= intervalMillis;
+        }
+    }
     private final AtomicBoolean reconnectScheduled = new AtomicBoolean(false);
     private volatile boolean running = false;
     private volatile long sequence = -1;
@@ -167,11 +194,22 @@ public final class GatewayClient {
         // 先にキャンセルする (再接続を繰り返しても多重送信にならないように)。
         ScheduledFuture<?> previous = heartbeatTask;
         if (previous != null) previous.cancel(false);
+        heartbeatMonitor.reset();
         heartbeatTask = scheduler.scheduleAtFixedRate(() -> {
+            long now = System.currentTimeMillis();
+            if (heartbeatMonitor.isZombie(now, intervalMillis)) {
+                // ACKが1インターバル途絶えた = 接続が半死状態。閉じて
+                // 再接続 (可能ならResume) させる (レビューM-2)。
+                logger.accept("[gateway:" + bot.id + "] heartbeat ACK timeout; closing to reconnect");
+                WebSocket ws = webSocket;
+                if (ws != null) ws.sendClose(1001, "heartbeat ack timeout");
+                return;
+            }
             Map<String, Object> payload = new LinkedHashMap<>();
             payload.put("op", 1L);
             payload.put("d", sequence < 0 ? null : sequence);
             send(payload);
+            heartbeatMonitor.onSend(now);
         }, intervalMillis, intervalMillis, TimeUnit.MILLISECONDS);
     }
 
@@ -268,7 +306,8 @@ public final class GatewayClient {
             }
             WebSocket ws = webSocket;
             if (ws != null) ws.sendClose(1000, "invalid session");
+        } else if (op == 11) { // Heartbeat ACK
+            heartbeatMonitor.onAck();
         }
-        // op 11 = Heartbeat ACK: 何もしない
     }
 }

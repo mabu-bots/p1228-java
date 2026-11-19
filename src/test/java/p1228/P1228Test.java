@@ -122,6 +122,10 @@ public final class P1228Test {
         testHandler();
         testAiHandler();
         testAiClient();
+        testEarnSkipsSaveWhenUnchanged();
+        testIdempotencyTrimming();
+        testHeartbeatMonitor();
+        testRetryDelay();
         System.out.println();
         System.out.println("===== 結果: " + passed + " passed / " + failed + " failed (合計 " + (passed + failed) + ") =====");
         if (failed > 0) {
@@ -804,5 +808,67 @@ public final class P1228Test {
         } finally {
             server.stop(0);
         }
+    }
+
+    // ===== 15. ポイント保存の省略 (レビューM-1) =====
+    private static void testEarnSkipsSaveWhenUnchanged() throws Exception {
+        java.nio.file.Path file = tempDir().resolve("store.json");
+        Store store = new Store(file);
+        MutableClock clock = new MutableClock(Instant.parse("2026-11-17T00:00:00Z"));
+        StarFeatures features = new StarFeatures(store, clock, new Random(1));
+        features.earnPoints("g", "u", "s1", 1, 60, 50);
+        byte[] before = java.nio.file.Files.readAllBytes(file);
+        Store.PointResult result = features.earnPoints("g", "u", "s2", 1, 60, 50);
+        byte[] after = java.nio.file.Files.readAllBytes(file);
+        check("earn: no file rewrite when nothing earned (cooldown)",
+                result.earned() == 0 && java.util.Arrays.equals(before, after));
+    }
+
+    // ===== 16. 冪等記録の間引き (レビューM-1) =====
+    private static void testIdempotencyTrimming() throws Exception {
+        Store store = new Store(tempDir().resolve("store.json"));
+        MutableClock clock = new MutableClock(Instant.parse("2026-11-17T00:00:00Z"));
+        StarFeatures features = new StarFeatures(store, clock, new Random(1));
+        int limit = StarFeatures.IDEMPOTENCY_CACHE_LIMIT;
+
+        for (int i = 0; i < limit + 10; i++) store.pointLedger.put("dummy:" + i, Map.of());
+        features.earnPoints("g", "u", "trim-target", 1, 0, 50);
+        check("trim: point ledger capped at limit", store.pointLedger.size() <= limit);
+        check("trim: newest ledger entry kept, oldest dropped",
+                store.pointLedger.containsKey("earn:trim-target") && !store.pointLedger.containsKey("dummy:0"));
+
+        for (int i = 0; i < limit + 10; i++) store.starActions.put("dummy:" + i, "{}");
+        grantPoints(features, clock, "g", "u2", 1);
+        features.drawLottery("g", "u2", "trim-lottery", 10, 50, 20);
+        check("trim: star actions capped at limit", store.starActions.size() <= limit
+                && store.starActions.containsKey("lottery:trim-lottery"));
+
+        store.omikujiDraws.put(Store.key("g", "old-user", "2000-01-01"), "吉");
+        features.drawOmikuji("g", "u3", "trim-omikuji");
+        check("trim: old omikuji draws pruned",
+                !store.omikujiDraws.containsKey(Store.key("g", "old-user", "2000-01-01")));
+    }
+
+    // ===== 17. ハートビートACK監視 (レビューM-2) =====
+    private static void testHeartbeatMonitor() {
+        GatewayClient.HeartbeatMonitor monitor = new GatewayClient.HeartbeatMonitor();
+        check("heartbeat: fresh monitor is not zombie", !monitor.isZombie(10_000, 1000));
+        monitor.onSend(0);
+        check("heartbeat: not zombie before interval elapses", !monitor.isZombie(999, 1000));
+        check("heartbeat: zombie when ACK missing for an interval", monitor.isZombie(1000, 1000));
+        monitor.onAck();
+        check("heartbeat: ACK clears zombie state", !monitor.isZombie(5000, 1000));
+        monitor.onSend(5000);
+        check("heartbeat: zombie again after next unacked send", monitor.isZombie(6000, 1000));
+        monitor.reset();
+        check("heartbeat: reset clears zombie state", !monitor.isZombie(999_999, 1000));
+    }
+
+    // ===== 18. 429 リトライ待機 (レビューM-3) =====
+    private static void testRetryDelay() {
+        check("retry: sub-second delay kept", DiscordRest.clampRetryDelayMillis(0.25) == 250);
+        check("retry: long delay capped at 5000ms", DiscordRest.clampRetryDelayMillis(30.0) == 5000);
+        check("retry: missing value defaults to 1000ms", DiscordRest.clampRetryDelayMillis(-1) == 1000);
+        check("retry: zero delay stays zero", DiscordRest.clampRetryDelayMillis(0) == 0);
     }
 }
