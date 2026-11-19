@@ -29,6 +29,15 @@ public final class StarHandler {
         void ackComponent(Interaction interaction) throws Exception;
 
         void followup(Interaction interaction, String content) throws Exception;
+
+        void deferReply(Interaction interaction) throws Exception;
+
+        void editOriginal(Interaction interaction, String content) throws Exception;
+    }
+
+    // AI会話の境界 (実装は AiClient。null の場合は /ai を無効として扱う)。
+    public interface AiChat {
+        String chat(String prompt) throws Exception;
     }
 
     // ----- 1.2 イベントとインタラクションの型 -----
@@ -115,16 +124,18 @@ public final class StarHandler {
     private final Store store;
     private final StarFeatures features;
     private final DiscordOps ops;
+    private final AiChat aiChat;
     private final Map<String, String> guildChannelParents = new HashMap<>();
     private final Map<String, String> guildNames = new HashMap<>();
     private final Map<String, Set<String>> memberRoles = new HashMap<>();
     private final Map<String, String> voiceChannels = new HashMap<>();
     public final List<String> logLines = new ArrayList<>();
 
-    public StarHandler(Store store, StarFeatures features, DiscordOps ops) {
+    public StarHandler(Store store, StarFeatures features, DiscordOps ops, AiChat aiChat) {
         this.store = store;
         this.features = features;
         this.ops = ops;
+        this.aiChat = aiChat;
     }
 
     private void log(String line) {
@@ -133,14 +144,21 @@ public final class StarHandler {
     }
 
     // ===== 2. 静的ヘルパー (原本の export 関数) =====
+    // Discord のメッセージ上限に合わせ、サロゲートペアを壊さずに
+    // code point 単位で切り詰める。
+    public static String truncateToCodePoints(String text, int maxCodePoints) {
+        if (text == null) return "";
+        int[] codePoints = text.codePoints().limit(maxCodePoints).toArray();
+        return new String(codePoints, 0, codePoints.length);
+    }
+
     public static String formatMemberMessage(String message, String userId, String username, String serverName) {
         String formatted = message
                 .replace("{user}", "<@" + userId + ">")
                 .replace("{user_id}", userId)
                 .replace("{username}", username)
                 .replace("{server}", serverName);
-        int[] codePoints = formatted.codePoints().limit(2000).toArray();
-        return new String(codePoints, 0, codePoints.length);
+        return truncateToCodePoints(formatted, 2000);
     }
 
     public static String resolveVoiceLogChannel(Map<String, Object> settings, String channelId, String categoryId) {
@@ -387,9 +405,40 @@ public final class StarHandler {
                     }
                 }
             }
+            case "ai" -> {
+                respondToAi(interaction);
+                return;
+            }
             default -> message = "このコマンドには対応していません。";
         }
         reply(interaction, message);
+    }
+
+    // ----- 4.1 AI会話 (/ai) -----
+    // LLM の応答生成には時間がかかるため、先に defer で応答を保留し、
+    // 生成が終わってから元の応答を編集して回答を届ける。生成に失敗した
+    // 場合も編集で失敗メッセージを届け、理由は log に残す。
+    private void respondToAi(Interaction interaction) throws Exception {
+        String prompt = interaction.optionString("prompt").trim();
+        if (prompt.isBlank()) {
+            reply(interaction, "質問を入力してください。");
+            return;
+        }
+        if (aiChat == null) {
+            reply(interaction, "AI機能は現在有効化されていません。");
+            return;
+        }
+        ops.deferReply(interaction);
+        try {
+            String answer = aiChat.chat(prompt);
+            if (answer == null || answer.isBlank()) {
+                throw new IllegalStateException("AI returned an empty response");
+            }
+            ops.editOriginal(interaction, truncateToCodePoints(answer, 2000));
+        } catch (Exception error) {
+            log("ai_chat_failed user=" + interaction.userId + " error=" + error.getMessage());
+            ops.editOriginal(interaction, "AIの応答取得に失敗しました。時間をおいて再度お試しください。");
+        }
     }
 
     // ===== 5. エラー処理とコンポーネント処理 =====

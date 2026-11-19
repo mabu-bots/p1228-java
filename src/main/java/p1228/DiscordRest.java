@@ -182,4 +182,23 @@ public final class DiscordRest implements StarHandler.DiscordOps {
         body.put("flags", 64L); // 64 = EPHEMERAL (実行した本人にだけ表示)
         request("POST", "/webhooks/" + appId + "/" + interaction.token, body);
     }
+
+    @Override
+    public void deferReply(StarHandler.Interaction interaction) throws Exception {
+        Map<String, Object> data = new LinkedHashMap<>();
+        data.put("flags", 64L); // 64 = EPHEMERAL (実行した本人にだけ表示)
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("type", 5L); // 5 = DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE (応答を保留し「考え中」を表示)
+        body.put("data", data);
+        request("POST", "/interactions/" + interaction.id + "/" + interaction.token + "/callback", body);
+    }
+
+    @Override
+    public void editOriginal(StarHandler.Interaction interaction, String content) throws Exception {
+        String appId = !interaction.applicationId.isBlank() ? interaction.applicationId : applicationId;
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("content", content);
+        // ephemeral かどうかは defer / reply の時点で決まるため、ここでは flags を付けない
+        request("PATCH", "/webhooks/" + appId + "/" + interaction.token + "/messages/@original", body);
+    }
 }

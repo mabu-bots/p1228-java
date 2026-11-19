@@ -87,7 +87,7 @@ public final class Main {
             Config.Bot bot = config.bots.get(botId);
             DiscordRest rest = new DiscordRest(botId, bot.applicationId, bot.token);
             if ("general".equals(botId)) {
-                StarHandler handler = new StarHandler(store, features, rest);
+                StarHandler handler = new StarHandler(store, features, rest, new AiClient(config.llamaBaseUrl));
                 GatewayClient client = new GatewayClient(bot, event -> {
                     try {
                         handler.handleEvent(new StarHandler.Event(event.eventId(), event.eventType(), event.payload()));
@@ -199,6 +199,16 @@ public final class Main {
             actions.add("FOLLOWUP content=" + content);
         }
 
+        @Override
+        public void deferReply(StarHandler.Interaction interaction) {
+            actions.add("DEFER_REPLY command=" + interaction.commandName);
+        }
+
+        @Override
+        public void editOriginal(StarHandler.Interaction interaction, String content) {
+            actions.add("EDIT_ORIGINAL command=" + interaction.commandName + " content=" + content);
+        }
+
         void printAll() {
             actions.forEach(a -> System.out.println("  " + a));
         }
@@ -258,7 +268,8 @@ public final class Main {
         Clock fixed = Clock.fixed(Instant.parse("2026-11-17T10:00:00Z"), ZoneOffset.UTC);
         StarFeatures features = new StarFeatures(store, fixed, new Random(42));
         FakeOps ops = new FakeOps();
-        StarHandler handler = new StarHandler(store, features, ops);
+        StarHandler handler = new StarHandler(store, features, ops,
+                prompt -> "（demo）これはAI会話の固定応答です。実際のLLMには接続していません。");
         String admin = "8"; // ADMINISTRATOR
 
         System.out.println("-- 1. GUILD_CREATE (サーバー: デモサーバー) --");

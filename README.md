@@ -27,10 +27,11 @@
 - 参加／退出メッセージ (`{user}` `{user_id}` `{username}` `{server}` プレースホルダ、2000字上限)、自動ロール、ブラックリスト
 - イベント別・VC別ログ (優先順位: チャンネル別 > カテゴリー別 > 共通)、固定メッセージ (スティッキー)、ロールパネル (最大5ボタン)
 - おみくじ (UTC日付ごとに1回)、ポイント (初期値: 1pt/メッセージ、60秒クールダウン、UTC日次上限50pt)、抽選 (10pt / 当選確率20% / 当選時追加50pt)、ロールショップ (購入時は pending で記録し、ロール付与の再試行で二重課金しない)
+- ローカルAI会話 (`/ai`): ローカルで動く llama.cpp (llama-server) の OpenAI互換API に質問し、応答を返す。生成に時間がかかるため、応答は defer (保留表示) してから編集で届ける
 
 管理コマンド: `/ping`、`/welcome`、`/goodbye`、`/autorole`、`/blacklist`、`/logs`、`/sticky`、`/role-panel`、`/game-config`、`/shop`
 
-一般ユーザー向け: `/omikuji`、`/points`、`/lottery`、`/buy`
+一般ユーザー向け: `/omikuji`、`/points`、`/lottery`、`/buy`、`/ai`
 
 ### 🔊 言ノ葉・紡言（Read Aloud）
 
@@ -48,7 +49,7 @@
 ```bash
 cd p1228-java
 ./build.sh          # フルビルド: クリーンコンパイル+単体テスト+p1228.jar生成 (Windows は build.bat)
-./run.sh test       # 単体テストのみ (82件・ネットワーク不要。build.sh でも実行されます)
+./run.sh test       # 単体テストのみ (97件・ネットワーク不要。build.sh でも実行されます)
 ./run.sh commands   # BOTごとの Slash コマンド定義JSONを表示 (オフライン)
 ./run.sh demo       # フェイクDiscordで星燈機能を一通り動かす (オフライン)
 ```
@@ -68,7 +69,7 @@ cd p1228-java
 
 ## ⚙️ 設定
 
-- `config.json`: Gateway 既定値 (内部概念として `127.0.0.1:8787`、リース30秒、試行8回、Interaction TTL 900秒、保持24時間)、3 BOT定義、Worker定義、保存先 (`data/store.json`)、VOICEVOX のURL (`voicevox_base_url`、既定 `http://127.0.0.1:50021`)
+- `config.json`: Gateway 既定値 (内部概念として `127.0.0.1:8787`、リース30秒、試行8回、Interaction TTL 900秒、保持24時間)、3 BOT定義、Worker定義、保存先 (`data/store.json`)、VOICEVOX のURL (`voicevox_base_url`、既定 `http://127.0.0.1:50021`)、ローカルLLM (llama.cpp) のURL (`llama_base_url`、既定 `http://127.0.0.1:8080`、`/ai` 用)
 - `.env`: Token / Application ID / Worker Secret。`run` と `sync-commands` は厳格モードで読み込み、Token未設定・重複・プレースホルダ、Secret 32文字未満などをエラーにします。`commands` はオフライン用の緩和モードで読み込みます。
 - プロキシ環境では環境変数 `HTTPS_PROXY` / `HTTP_PROXY` を自動で読みます (Discord REST / Gateway / VOICEVOX 共通)。
 
@@ -110,12 +111,13 @@ p1228-java/
     StarFeatures.java  ポイント/抽選/おみくじ/ショップ (star_features.go 移植)
     Commands.java      Slashコマンド定義 (star-features.ts / sync-commands.ts 移植)
     StarHandler.java   星燈のイベント処理 (star-features.ts 移植、DiscordOps境界)
+    AiClient.java      ローカルLLM (llama.cpp OpenAI互換API) クライアント (/ai 用)
     ReadAloud.java     読み上げ設定/辞書/VOICEVOX/キュー (read-aloud 移植)
     DiscordRest.java   RESTクライアント (許可リスト6操作・operation_id冪等)
     GatewayClient.java Gateway WebSocketクライアント
     ProxySupport.java  環境変数プロキシ対応
   src/test/java/p1228/
-    P1228Test.java     単体テスト 82件
+    P1228Test.java     単体テスト 97件
   data/                store.json (自動生成・Git管理外)
 ```
 

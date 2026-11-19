@@ -54,6 +54,7 @@ public final class Config {
     public String logLevel = "info";
     public String logFormat = "json";
     public String voicevoxBaseUrl = "http://127.0.0.1:50021";
+    public String llamaBaseUrl = "http://127.0.0.1:8080";
 
     public static final String[] REQUIRED_BOTS = {"general", "read_aloud_a", "read_aloud_b"};
 
@@ -148,7 +149,8 @@ public final class Config {
               },
               "database": {"path":"data/store.json"},
               "logging": {"level":"info","format":"json"},
-              "voicevox_base_url": "http://127.0.0.1:50021"
+              "voicevox_base_url": "http://127.0.0.1:50021",
+              "llama_base_url": "http://127.0.0.1:8080"
             }
             """;
     }
@@ -177,6 +179,9 @@ public final class Config {
         if (logging.containsKey("format") && !Json.str(logging.get("format")).isBlank()) c.logFormat = Json.str(logging.get("format")).toLowerCase();
         if (root.containsKey("voicevox_base_url") && !Json.str(root.get("voicevox_base_url")).isBlank()) {
             c.voicevoxBaseUrl = Json.str(root.get("voicevox_base_url"));
+        }
+        if (root.containsKey("llama_base_url") && !Json.str(root.get("llama_base_url")).isBlank()) {
+            c.llamaBaseUrl = Json.str(root.get("llama_base_url"));
         }
 
         Map<String, Object> botsJson = Json.obj(root.get("bots"));

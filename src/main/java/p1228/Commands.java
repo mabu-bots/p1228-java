@@ -8,7 +8,8 @@ import java.util.Map;
 // ===== 1. Commands (Slashコマンド定義) =====
 // workers/src/general/star-features.ts の starCommands と
 // workers/src/sync-commands.ts の振り分けをそのまま移植する。
-// general = ping + starCommands / read-aloud 2体 = join, leave, say。
+// general = ping + starCommands + ai (ai は Java版独自のローカルLLM連携) /
+// read-aloud 2体 = join, leave, say。
 // オプション型: 1=SUB_COMMAND, 3=STRING, 4=INTEGER, 6=USER, 7=CHANNEL, 8=ROLE
 public final class Commands {
 
@@ -153,6 +154,8 @@ public final class Commands {
         List<Map<String, Object>> commands = new ArrayList<>();
         commands.add(command("ping", "星燈の応答状態を確認します", null));
         commands.addAll(starCommands());
+        commands.add(command("ai", "ローカルAIに質問します", List.of(
+                option("prompt", "質問・お題", 3, true, extra("max_length", 500L)))));
         return commands;
     }
 
@@ -176,9 +179,9 @@ public final class Commands {
     }
 
     // ===== 4. 管理者判定のモデル (star-features.ts と同一規則) =====
-    // omikuji / points / lottery / buy と shop list だけが非管理者コマンド。
+    // omikuji / points / lottery / buy / ai と shop list だけが非管理者コマンド。
     public static boolean isAdminCommand(String commandName, String subcommandName) {
-        if (List.of("omikuji", "points", "lottery", "buy").contains(commandName)) return false;
+        if (List.of("omikuji", "points", "lottery", "buy", "ai").contains(commandName)) return false;
         if ("shop".equals(commandName) && "list".equals(subcommandName)) return false;
         return true;
     }

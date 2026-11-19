@@ -120,6 +120,8 @@ public final class P1228Test {
         testCommands();
         testStorePersistence();
         testHandler();
+        testAiHandler();
+        testAiClient();
         System.out.println();
         System.out.println("===== 結果: " + passed + " passed / " + failed + " failed (合計 " + (passed + failed) + ") =====");
         if (failed > 0) {
@@ -202,6 +204,15 @@ public final class P1228Test {
         check("config: intents (33409 lacks GUILD_MEMBERS note)", defaults.bots.get("general").intents == 33411
                 && defaults.bots.get("read_aloud_a").intents == 33409 && defaults.bots.get("read_aloud_b").intents == 33409);
         check("config: strict load succeeds with full env", Config.load(defaultsFile, true, goodEnv()) != null);
+
+        // ローカルLLM の URL: 既定値と JSON 上書き
+        check("config: llama base url default", defaults.llamaBaseUrl.equals("http://127.0.0.1:8080"));
+        check("config: llama base url default in defaultConfigJson",
+                Config.load(null, false, goodEnv()).llamaBaseUrl.equals("http://127.0.0.1:8080"));
+        Path llamaFile = writeConfig("{" + threeBots("サーバーを見守り中") + "," + threeWorkers()
+                + ",\"llama_base_url\":\"http://127.0.0.1:9999\"}");
+        check("config: llama base url override from JSON",
+                Config.load(llamaFile, false, goodEnv()).llamaBaseUrl.equals("http://127.0.0.1:9999"));
 
         // 重複トークン
         Map<String, String> dupEnv = goodEnv();
@@ -434,7 +445,7 @@ public final class P1228Test {
     private static void testCommands() {
         check("commands: general bot command names", commandNames(Commands.forBot("general")).equals(
                 List.of("ping", "welcome", "goodbye", "autorole", "blacklist", "logs", "sticky", "role-panel",
-                        "game-config", "omikuji", "points", "lottery", "shop", "buy")));
+                        "game-config", "omikuji", "points", "lottery", "shop", "buy", "ai")));
         check("commands: read-aloud bot command names", commandNames(Commands.forBot("read_aloud_a")).equals(
                 List.of("join", "leave", "say")) && commandNames(Commands.forBot("read_aloud_b")).equals(
                 List.of("join", "leave", "say")));
@@ -463,9 +474,21 @@ public final class P1228Test {
                 && Commands.isAdminCommand("shop", "add") && !Commands.isAdminCommand("shop", "list")
                 && !Commands.isAdminCommand("omikuji", "") && !Commands.isAdminCommand("points", "")
                 && !Commands.isAdminCommand("lottery", "") && !Commands.isAdminCommand("buy", ""));
+        check("commands: ai is not an admin command", !Commands.isAdminCommand("ai", ""));
+
+        Map<String, Object> ai = findCommand(Commands.forBot("general"), "ai");
+        check("commands: general has 15 commands including ai",
+                Commands.generalCommands().size() == 15 && ai != null);
+        Map<String, Object> promptOption = ai == null ? null : Json.obj(Json.arr(ai.get("options")).get(0));
+        check("commands: ai has required prompt option (max_length 500)", promptOption != null
+                && "prompt".equals(Json.str(promptOption.get("name")))
+                && Json.lng(promptOption.get("type"), 0) == 3
+                && Json.bool(promptOption.get("required"))
+                && Json.lng(promptOption.get("max_length"), 0) == 500);
+
         check("commands: JSON serialization is valid JSON",
                 Json.obj(Json.parse(Commands.toJson("general"))).isEmpty()
-                        && Json.arr(Json.parse(Commands.toJson("general"))).size() == 14);
+                        && Json.arr(Json.parse(Commands.toJson("general"))).size() == 15);
     }
 
     // ===== 11. Store 永続化 =====
@@ -510,6 +533,7 @@ public final class P1228Test {
         final List<String> roles = new ArrayList<>();
         final List<String> replies = new ArrayList<>();
         final List<String> deleted = new ArrayList<>();
+        final List<String> flow = new ArrayList<>();
         private int counter = 0;
 
         @Override public String sendMessage(String channelId, String content, Object components, String operationId) {
@@ -536,6 +560,14 @@ public final class P1228Test {
         @Override public void followup(StarHandler.Interaction interaction, String content) {
             replies.add(content);
         }
+
+        @Override public void deferReply(StarHandler.Interaction interaction) {
+            flow.add("DEFER_REPLY");
+        }
+
+        @Override public void editOriginal(StarHandler.Interaction interaction, String content) {
+            flow.add("EDIT_ORIGINAL|" + content);
+        }
     }
 
     private static Map<String, Object> memberPayload(String guildId, String userId, String username, List<Object> roles) {
@@ -554,7 +586,7 @@ public final class P1228Test {
         MutableClock clock = new MutableClock(Instant.parse("2026-11-17T00:00:00Z"));
         StarFeatures features = new StarFeatures(store, clock, new FixedRandom(0));
         RecordingOps ops = new RecordingOps();
-        StarHandler handler = new StarHandler(store, features, ops);
+        StarHandler handler = new StarHandler(store, features, ops, null);
 
         Map<String, Object> guild = new LinkedHashMap<>();
         guild.put("id", "g1");
@@ -657,5 +689,120 @@ public final class P1228Test {
         store.setGuildSetting("g1", "role-panel:panel-msg", List.of("777"));
         handler.handleComponent(component);
         check("handler: registered role panel grants role", ops.roles.contains("g1|u1|777"));
+    }
+
+    // ===== 13. StarHandler の /ai (フェイク AiChat) =====
+    private static StarHandler.Interaction aiInteraction(String prompt) {
+        StarHandler.Interaction it = new StarHandler.Interaction();
+        it.id = "int-ai";
+        it.type = 2;
+        it.guildId = "g1";
+        it.userId = "u1";
+        it.permissions = "0";
+        it.commandName = "ai";
+        if (prompt != null) it.options.put("prompt", prompt);
+        return it;
+    }
+
+    private static void testAiHandler() throws Exception {
+        Store store = new Store(tempDir().resolve("store.json"));
+        MutableClock clock = new MutableClock(Instant.parse("2026-11-17T00:00:00Z"));
+        StarFeatures features = new StarFeatures(store, clock, new FixedRandom(0));
+
+        // 成功: defer の後に editOriginal で回答が届く
+        RecordingOps okOps = new RecordingOps();
+        StarHandler okHandler = new StarHandler(store, features, okOps, prompt -> "AIの回答です");
+        okHandler.respondToCommand(aiInteraction("星について教えて"));
+        check("ai: success defers then edits original with the answer",
+                okOps.flow.equals(List.of("DEFER_REPLY", "EDIT_ORIGINAL|AIの回答です")));
+
+        // 長い回答は 2000 code point に切り詰められる
+        RecordingOps longOps = new RecordingOps();
+        StarHandler longHandler = new StarHandler(store, features, longOps, prompt -> "あ".repeat(3000));
+        longHandler.respondToCommand(aiInteraction("長く答えて"));
+        String edited = longOps.flow.size() == 2 ? longOps.flow.get(1) : "";
+        check("ai: long answer truncated to 2000 code points",
+                edited.startsWith("EDIT_ORIGINAL|")
+                        && edited.substring("EDIT_ORIGINAL|".length()).codePointCount(0, edited.length() - "EDIT_ORIGINAL|".length()) == 2000);
+
+        // 失敗: editOriginal で失敗メッセージが届く
+        RecordingOps failOps = new RecordingOps();
+        StarHandler failHandler = new StarHandler(store, features, failOps,
+                prompt -> { throw new IllegalStateException("connection refused"); });
+        failHandler.respondToCommand(aiInteraction("質問"));
+        check("ai: failure edits original with the failure message",
+                failOps.flow.equals(List.of("DEFER_REPLY",
+                        "EDIT_ORIGINAL|AIの応答取得に失敗しました。時間をおいて再度お試しください。")));
+        check("ai: failure is logged", failHandler.logLines.stream()
+                .anyMatch(l -> l.startsWith("ai_chat_failed") && l.contains("connection refused")));
+
+        // aiChat が null: 通常 reply で無効メッセージ、defer はしない
+        RecordingOps nullOps = new RecordingOps();
+        StarHandler nullHandler = new StarHandler(store, features, nullOps, null);
+        nullHandler.respondToCommand(aiInteraction("質問"));
+        check("ai: disabled message via reply when aiChat is null",
+                nullOps.replies.equals(List.of("AI機能は現在有効化されていません。")) && nullOps.flow.isEmpty());
+
+        // prompt が空: 通常 reply で入力を促す
+        RecordingOps emptyOps = new RecordingOps();
+        StarHandler emptyHandler = new StarHandler(store, features, emptyOps, prompt -> "使われない");
+        emptyHandler.respondToCommand(aiInteraction(""));
+        check("ai: empty prompt asks for input via reply",
+                emptyOps.replies.equals(List.of("質問を入力してください。")) && emptyOps.flow.isEmpty());
+    }
+
+    // ===== 14. AiClient (ローカルスタブHTTPサーバー) =====
+    // 開発VMのように Java プロセスの直接TCPが遮断される環境では、
+    // スタブへの疎通自体が成立しないため、その場合だけテストを
+    // スキップする (通常の環境では常に実行される)。疎通確認は、
+    // 対象でないパスへの GET に対する応答が HTTP ステータス行から
+    // 始まるかどうかで判定する (遮断時はプロキシの拒否文が返る)。
+    private static boolean stubReachable(int port) {
+        try (java.net.Socket socket = new java.net.Socket()) {
+            socket.connect(new java.net.InetSocketAddress("127.0.0.1", port), 3000);
+            socket.setSoTimeout(5000);
+            socket.getOutputStream().write("GET /__probe__ HTTP/1.0\r\n\r\n".getBytes(StandardCharsets.UTF_8));
+            byte[] head = socket.getInputStream().readNBytes(5);
+            return head.length == 5 && "HTTP/".equals(new String(head, StandardCharsets.UTF_8));
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    private static void testAiClient() throws Exception {
+        List<String> requestBodies = new ArrayList<>();
+        com.sun.net.httpserver.HttpServer server =
+                com.sun.net.httpserver.HttpServer.create(new java.net.InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/v1/chat/completions", exchange -> {
+            String requestBody = new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
+            requestBodies.add(requestBody);
+            String content = requestBody.contains("空応答") ? "" : "こんにちは、星燈AIです。";
+            String responseJson = "{\"choices\":[{\"message\":{\"role\":\"assistant\",\"content\":\""
+                    + content + "\"}}]}";
+            byte[] bytes = responseJson.getBytes(StandardCharsets.UTF_8);
+            exchange.getResponseHeaders().set("Content-Type", "application/json");
+            exchange.sendResponseHeaders(200, bytes.length);
+            exchange.getResponseBody().write(bytes);
+            exchange.close();
+        });
+        server.start();
+        if (!stubReachable(server.getAddress().getPort())) {
+            System.out.println("SKIP: ai-client (この環境では Java プロセスの TCP 接続が遮断されているため、スタブ疎通を伴う検証を省略)");
+            server.stop(0);
+            return;
+        }
+        try {
+            AiClient client = new AiClient("http://127.0.0.1:" + server.getAddress().getPort());
+            String answer = client.chat("おすすめの星は？");
+            check("ai-client: returns choices[0].message.content", "こんにちは、星燈AIです。".equals(answer));
+            check("ai-client: request body carries system and user messages",
+                    requestBodies.size() == 1 && requestBodies.get(0).contains("おすすめの星は？")
+                            && requestBodies.get(0).contains(AiClient.SYSTEM_PROMPT)
+                            && requestBodies.get(0).contains("\"max_tokens\":400"));
+            checkThrows("ai-client: empty content is an error", "empty response",
+                    () -> client.chat("空応答で返して"));
+        } finally {
+            server.stop(0);
+        }
     }
 }
