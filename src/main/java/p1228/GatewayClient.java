@@ -44,6 +44,12 @@ public final class GatewayClient {
     private volatile WebSocket webSocket;
     private volatile ScheduledFuture<?> heartbeatTask;
     private final HeartbeatMonitor heartbeatMonitor = new HeartbeatMonitor();
+    private volatile ScheduledFuture<?> readyWatchdogTask;
+    private final SessionWatchdog sessionWatchdog = new SessionWatchdog();
+    // セッション確立の制限時間。接続開始からこれを過ぎても READY /
+    // RESUMED が来ない接続はサイレント停滞とみなして閉じ、既存の
+    // バックオフ付き再接続に乗せる (Issue #4)。
+    private static final long READY_TIMEOUT_MILLIS = 30_000;
 
     // ハートビートの送信とACK受信を監視し、ACKが途絶えた接続 (半死状態) を
     // 検知する (レビューM-2)。前回送信分が未ACKのまま1インターバル
@@ -68,6 +74,34 @@ public final class GatewayClient {
 
         synchronized boolean isZombie(long nowMillis, long intervalMillis) {
             return lastSentAtMillis >= 0 && !acked && nowMillis - lastSentAtMillis >= intervalMillis;
+        }
+    }
+
+    // セッション確立フェーズ (接続→Hello→Identify/Resume→READY/RESUMED)
+    // を監視する (Issue #4)。ハートビートACK監視が「確立後の死活」を
+    // 見るのに対し、こちらは「確立できたか」を見る。READY が来ないまま
+    // 接続だけ生き続ける状態ではACK監視は発動しないため、両方が要る。
+    static final class SessionWatchdog {
+        private long attemptStartedAtMillis = -1;
+        private boolean established = false;
+
+        synchronized void onAttempt(long nowMillis) {
+            attemptStartedAtMillis = nowMillis;
+            established = false;
+        }
+
+        synchronized void onEstablished() {
+            established = true;
+        }
+
+        synchronized void reset() {
+            attemptStartedAtMillis = -1;
+            established = false;
+        }
+
+        synchronized boolean isExpired(long nowMillis, long timeoutMillis) {
+            return attemptStartedAtMillis >= 0 && !established
+                    && nowMillis - attemptStartedAtMillis >= timeoutMillis;
         }
     }
     private final AtomicBoolean reconnectScheduled = new AtomicBoolean(false);
@@ -118,6 +152,8 @@ public final class GatewayClient {
     private void connect(String url) {
         if (!running) return;
         logger.accept("[gateway:" + bot.id + "] connecting to " + url);
+        sessionWatchdog.onAttempt(System.currentTimeMillis());
+        scheduleReadyWatchdog();
         httpClient.newWebSocketBuilder()
                 .connectTimeout(Duration.ofSeconds(20))
                 .buildAsync(URI.create(url), new Listener())
@@ -129,6 +165,21 @@ public final class GatewayClient {
                         webSocket = ws;
                     }
                 });
+    }
+
+    // 接続開始から READY_TIMEOUT_MILLIS 経ってもセッションが確立して
+    // いなければ、接続を閉じて再接続させる (Issue #4)。接続自体が
+    // ハングして WebSocket がまだ無い場合は、直接再接続を予約する。
+    private void scheduleReadyWatchdog() {
+        ScheduledFuture<?> previous = readyWatchdogTask;
+        if (previous != null) previous.cancel(false);
+        readyWatchdogTask = scheduler.schedule(() -> {
+            if (!sessionWatchdog.isExpired(System.currentTimeMillis(), READY_TIMEOUT_MILLIS)) return;
+            logger.accept("[gateway:" + bot.id + "] READY timeout; closing to reconnect");
+            WebSocket ws = webSocket;
+            if (ws != null) ws.sendClose(1001, "ready timeout");
+            else scheduleReconnect();
+        }, READY_TIMEOUT_MILLIS, TimeUnit.MILLISECONDS);
     }
 
     private void scheduleReconnect() {
@@ -290,8 +341,10 @@ public final class GatewayClient {
                 resumeGatewayUrl = Json.str(d.get("resume_gateway_url"));
                 Map<String, Object> user = Json.obj(d.get("user"));
                 botUserId = Json.str(user.get("id"));
+                sessionWatchdog.onEstablished();
                 logger.accept("[gateway:" + bot.id + "] READY session=" + sessionId + " user=" + botUserId);
             } else if ("RESUMED".equals(type)) {
+                sessionWatchdog.onEstablished();
                 logger.accept("[gateway:" + bot.id + "] RESUMED session=" + sessionId);
             }
             listener.onEvent(new GatewayEvent(UUID.randomUUID().toString(), type, d, sequence));

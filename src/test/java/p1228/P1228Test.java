@@ -125,6 +125,7 @@ public final class P1228Test {
         testEarnSkipsSaveWhenUnchanged();
         testIdempotencyTrimming();
         testHeartbeatMonitor();
+        testSessionWatchdog();
         testRetryDelay();
         System.out.println();
         System.out.println("===== 結果: " + passed + " passed / " + failed + " failed (合計 " + (passed + failed) + ") =====");
@@ -870,5 +871,21 @@ public final class P1228Test {
         check("retry: long delay capped at 5000ms", DiscordRest.clampRetryDelayMillis(30.0) == 5000);
         check("retry: missing value defaults to 1000ms", DiscordRest.clampRetryDelayMillis(-1) == 1000);
         check("retry: zero delay stays zero", DiscordRest.clampRetryDelayMillis(0) == 0);
+    }
+
+    // ===== 19. セッション確立ウォッチドッグ (Issue #4) =====
+    private static void testSessionWatchdog() {
+        GatewayClient.SessionWatchdog watchdog = new GatewayClient.SessionWatchdog();
+        check("session: fresh watchdog is not expired", !watchdog.isExpired(999_999, 30_000));
+        watchdog.onAttempt(0);
+        check("session: not expired before timeout", !watchdog.isExpired(29_999, 30_000));
+        check("session: expired when READY missing past timeout", watchdog.isExpired(30_000, 30_000));
+        watchdog.onEstablished();
+        check("session: established clears expiry", !watchdog.isExpired(999_999, 30_000));
+        watchdog.onAttempt(100_000);
+        check("session: new attempt re-arms the deadline", !watchdog.isExpired(129_999, 30_000));
+        check("session: new attempt expires at its own deadline", watchdog.isExpired(130_000, 30_000));
+        watchdog.reset();
+        check("session: reset clears expiry", !watchdog.isExpired(999_999, 30_000));
     }
 }
