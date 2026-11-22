@@ -11,11 +11,14 @@
 
 ## ✨ BOT構成
 
-| BOT    | ID             | 主な役割                      | Watching表示       | Intents |
-| ------ | -------------- | ----------------------------- | ------------------ | ------- |
-| 星燈   | `general`      | サーバー機能・管理コマンド    | サーバーを見守り中 | 33411   |
-| 言ノ葉 | `read_aloud_a` | 読み上げ・独立Voiceセッション | 言葉を紡ぎ中       | 33409   |
-| 紡言   | `read_aloud_b` | 読み上げ・独立Voiceセッション | 声をお届け中       | 33409   |
+| BOT    | ID             | 主な役割                      | Watching表示              | Intents |
+| ------ | -------------- | ----------------------------- | ------------------------- | ------- |
+| 星燈   | `general`      | サーバー機能・管理コマンド    | `/help \| {Gateway遅延}ms` | 33411   |
+| 言ノ葉 | `read_aloud_a` | 読み上げ・独立Voiceセッション | `/help \| {Gateway遅延}ms` | 33409   |
+| 紡言   | `read_aloud_b` | 読み上げ・独立Voiceセッション | `/help \| {Gateway遅延}ms` | 33409   |
+
+> [!NOTE]
+> プレゼンス表示は全 Bot 統一形式です。遅延は Heartbeat 送信から ACK (op 11) 受信までの往復時間で、READY / RESUMED 後に Presence Update (op 3) で設定し、5分ごとに更新します (未測定・負値は 0ms)。`config.json` の `watching` は設定項目として残っていますが、表示には使われません。
 
 > [!NOTE]
 > 既知の差異: read-aloud 2体の intents `33409` には GUILD_MEMBERS ビットが含まれていません (原本 `config/gateway.yaml` のコメントは含むと書かれていますが値が一致しない、原本でも未解決の要確認事項)。Java版は原本の値をそのまま踏襲しています。
@@ -49,7 +52,7 @@
 ```bash
 cd p1228-java
 ./build.sh          # フルビルド: クリーンコンパイル+単体テスト+p1228.jar生成 (Windows は build.bat)
-./run.sh test       # 単体テストのみ (97件・ネットワーク不要。build.sh でも実行されます)
+./run.sh test       # 単体テストのみ (131件・ネットワーク不要。build.sh でも実行されます)
 ./run.sh commands   # BOTごとの Slash コマンド定義JSONを表示 (オフライン)
 ./run.sh demo       # フェイクDiscordで星燈機能を一通り動かす (オフライン)
 ```

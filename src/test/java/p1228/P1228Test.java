@@ -128,6 +128,7 @@ public final class P1228Test {
         testSessionWatchdog();
         testRetryDelay();
         testGatewayParams();
+        testPresence();
         System.out.println();
         System.out.println("===== 結果: " + passed + " passed / " + failed + " failed (合計 " + (passed + failed) + ") =====");
         if (failed > 0) {
@@ -904,5 +905,31 @@ public final class P1228Test {
                 GatewayClient.withGatewayParams("wss://example.gg/?foo=bar")
                         .equals("wss://example.gg/?foo=bar&v=10&encoding=json"));
         check("gateway-params: null stays null", GatewayClient.withGatewayParams(null) == null);
+    }
+
+    // ===== 21. プレゼンス統一形式 (Watching「/help | {遅延}ms」) =====
+    private static void testPresence() {
+        check("presence: name carries latency", GatewayClient.presenceName(42).equals("/help | 42ms"));
+        check("presence: zero latency", GatewayClient.presenceName(0).equals("/help | 0ms"));
+        check("presence: negative latency clamped to zero", GatewayClient.presenceName(-5).equals("/help | 0ms"));
+
+        // 遅延は Heartbeat 送信→ACK (op 11) 受信の往復時間
+        GatewayClient.HeartbeatMonitor monitor = new GatewayClient.HeartbeatMonitor();
+        check("presence: latency is zero before measurement", monitor.latencyMillis() == 0);
+        monitor.onSend(1_000);
+        monitor.onAck(1_042);
+        check("presence: latency measured from heartbeat round trip", monitor.latencyMillis() == 42);
+        monitor.reset();
+        check("presence: reset clears latency", monitor.latencyMillis() == 0);
+
+        // Presence Update (op 3) / Identify 共用の d の構造
+        Map<String, Object> data = GatewayClient.presenceData(42);
+        check("presence: status online", "online".equals(Json.str(data.get("status"))));
+        check("presence: not afk", !Json.bool(data.get("afk")));
+        Object activities = data.get("activities");
+        check("presence: single activity", activities instanceof List<?> list && list.size() == 1);
+        Map<String, Object> activity = Json.obj(((List<?>) activities).get(0));
+        check("presence: activity name unified", "/help | 42ms".equals(Json.str(activity.get("name"))));
+        check("presence: activity type is watching (3)", Json.lng(activity.get("type"), -1) == 3);
     }
 }

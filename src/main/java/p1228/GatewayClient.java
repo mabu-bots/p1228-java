@@ -20,6 +20,9 @@ import java.util.function.Consumer;
 // java.net.http.WebSocket で Discord Gateway プロトコルを実装する。
 // Hello → Heartbeat / Identify (watching を activity type 3 で送信) /
 // Resume (session_id + seq) / Dispatch 配送 / 再接続バックオフ。
+// プレゼンスは全 Bot 統一形式: Watching「/help | {遅延}ms」(遅延は
+// Heartbeat の往復時間)。READY / RESUMED 後に Presence Update (op 3)
+// で設定し、5分ごとに更新する。
 // 注意: この実行VMでは Java プロセスからの直接TCPが権限で遮断されるため
 // 実接続は未検証 (原本も Discord 実接続は未検証)。構造は完成させてある。
 public final class GatewayClient {
@@ -44,6 +47,11 @@ public final class GatewayClient {
     private volatile WebSocket webSocket;
     private volatile ScheduledFuture<?> heartbeatTask;
     private final HeartbeatMonitor heartbeatMonitor = new HeartbeatMonitor();
+    private volatile ScheduledFuture<?> presenceTask;
+    private volatile boolean sessionEstablished = false;
+    // プレゼンスの定期更新間隔。遅延は Heartbeat のたびに変わるため、
+    // 確立後はこの間隔で Presence Update を送り直す。
+    private static final long PRESENCE_UPDATE_INTERVAL_MILLIS = 300_000;
     private volatile ScheduledFuture<?> readyWatchdogTask;
     private final SessionWatchdog sessionWatchdog = new SessionWatchdog();
     // セッション確立の制限時間。接続開始からこれを過ぎても READY /
@@ -53,10 +61,12 @@ public final class GatewayClient {
 
     // ハートビートの送信とACK受信を監視し、ACKが途絶えた接続 (半死状態) を
     // 検知する (レビューM-2)。前回送信分が未ACKのまま1インターバル
-    // 経過したらゾンビとみなす。
+    // 経過したらゾンビとみなす。あわせて、送信からACK (op 11) 受信までの
+    // 往復時間を Gateway 遅延として保持し、プレゼンス表示に使う。
     static final class HeartbeatMonitor {
         private long lastSentAtMillis = -1;
         private boolean acked = true;
+        private long lastLatencyMillis = -1;
 
         synchronized void onSend(long nowMillis) {
             lastSentAtMillis = nowMillis;
@@ -67,14 +77,45 @@ public final class GatewayClient {
             acked = true;
         }
 
+        // ACK受信時刻を受け取り、直前の送信との差分を遅延として記録する。
+        synchronized void onAck(long nowMillis) {
+            acked = true;
+            if (lastSentAtMillis >= 0) lastLatencyMillis = nowMillis - lastSentAtMillis;
+        }
+
         synchronized void reset() {
             lastSentAtMillis = -1;
             acked = true;
+            lastLatencyMillis = -1;
+        }
+
+        // 表示用の遅延 (ms)。未測定・負値は 0 に丸める。
+        synchronized long latencyMillis() {
+            return Math.max(0, lastLatencyMillis);
         }
 
         synchronized boolean isZombie(long nowMillis, long intervalMillis) {
             return lastSentAtMillis >= 0 && !acked && nowMillis - lastSentAtMillis >= intervalMillis;
         }
+    }
+
+    // 全 Bot 統一のプレゼンス表示名: 「/help | {遅延}ms」。
+    static String presenceName(long latencyMillis) {
+        return "/help | " + Math.max(0, latencyMillis) + "ms";
+    }
+
+    // Presence Update (op 3) と Identify の presence で共用する d の中身。
+    // アクティビティは Watching (type 3) 固定。
+    static Map<String, Object> presenceData(long latencyMillis) {
+        Map<String, Object> activity = new LinkedHashMap<>();
+        activity.put("name", presenceName(latencyMillis));
+        activity.put("type", 3L); // 3 = Watching
+        Map<String, Object> presence = new LinkedHashMap<>();
+        presence.put("since", null);
+        presence.put("activities", List.of(activity));
+        presence.put("status", "online");
+        presence.put("afk", false);
+        return presence;
     }
 
     // セッション確立フェーズ (接続→Hello→Identify/Resume→READY/RESUMED)
@@ -164,6 +205,7 @@ public final class GatewayClient {
         if (!running) return;
         url = withGatewayParams(url);
         logger.accept("[gateway:" + bot.id + "] connecting to " + url);
+        sessionEstablished = false;
         sessionWatchdog.onAttempt(System.currentTimeMillis());
         scheduleReadyWatchdog();
         httpClient.newWebSocketBuilder()
@@ -228,13 +270,9 @@ public final class GatewayClient {
 
     // ----- 2.1 Identify / Resume / Heartbeat -----
     private void sendIdentify(WebSocket ws) {
-        Map<String, Object> presenceActivity = new LinkedHashMap<>();
-        presenceActivity.put("name", bot.watching);
-        presenceActivity.put("type", 3L); // 3 = Watching
-        Map<String, Object> presence = new LinkedHashMap<>();
-        presence.put("activities", List.of(presenceActivity));
-        presence.put("status", "online");
-        presence.put("afk", false);
+        // Identify 時点では遅延は未測定のため 0ms 表示。確立後に
+        // Presence Update で実測値に置き換わる。
+        Map<String, Object> presence = presenceData(heartbeatMonitor.latencyMillis());
         Map<String, Object> properties = new LinkedHashMap<>();
         properties.put("os", System.getProperty("os.name", "linux"));
         properties.put("browser", "p1228-java");
@@ -286,6 +324,33 @@ public final class GatewayClient {
         }, intervalMillis, intervalMillis, TimeUnit.MILLISECONDS);
     }
 
+    // Presence Update (op 3)。現在の Gateway 遅延で統一形式のプレゼンスを
+    // 送る。セッション未確立の間は送らない (Identify の presence が初期値)。
+    private void sendPresenceUpdate() {
+        if (!sessionEstablished) return;
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("op", 3L);
+        payload.put("d", presenceData(heartbeatMonitor.latencyMillis()));
+        send(payload);
+    }
+
+    // セッション確立 (READY / RESUMED) のたびに呼ばれる。即時に1回送り、
+    // 以後は PRESENCE_UPDATE_INTERVAL_MILLIS ごとに送り直す。再接続で
+    // 多重にタスクが残らないよう、前回分は先にキャンセルする。
+    private void startPresenceUpdates() {
+        sessionEstablished = true;
+        sendPresenceUpdate();
+        ScheduledFuture<?> previous = presenceTask;
+        if (previous != null) previous.cancel(false);
+        presenceTask = scheduler.scheduleAtFixedRate(() -> {
+            try {
+                sendPresenceUpdate();
+            } catch (Exception e) {
+                logger.accept("[gateway:" + bot.id + "] presence update failed: " + e.getMessage());
+            }
+        }, PRESENCE_UPDATE_INTERVAL_MILLIS, PRESENCE_UPDATE_INTERVAL_MILLIS, TimeUnit.MILLISECONDS);
+    }
+
     // Voice State Update (op 4)。原本の /join が Gateway 経由で送る操作。
     // 単一JVM構成の現行コードに呼び出し元は無いが、原本との対応を保つため残す。
     public void updateVoiceState(String guildId, String channelId) {
@@ -330,6 +395,7 @@ public final class GatewayClient {
         @Override
         public CompletionStage<?> onClose(WebSocket ws, int statusCode, String reason) {
             logger.accept("[gateway:" + bot.id + "] websocket closed: " + statusCode + " " + reason);
+            sessionEstablished = false;
             if (running) scheduleReconnect();
             return null;
         }
@@ -337,6 +403,7 @@ public final class GatewayClient {
         @Override
         public void onError(WebSocket ws, Throwable error) {
             logger.accept("[gateway:" + bot.id + "] websocket error: " + error.getMessage());
+            sessionEstablished = false;
             if (running) scheduleReconnect();
         }
     }
@@ -369,10 +436,12 @@ public final class GatewayClient {
                 sessionWatchdog.onEstablished();
                 reconnectAttempts = 0;
                 logger.accept("[gateway:" + bot.id + "] READY session=" + sessionId + " user=" + botUserId);
+                startPresenceUpdates();
             } else if ("RESUMED".equals(type)) {
                 sessionWatchdog.onEstablished();
                 reconnectAttempts = 0;
                 logger.accept("[gateway:" + bot.id + "] RESUMED session=" + sessionId);
+                startPresenceUpdates();
             }
             listener.onEvent(new GatewayEvent(UUID.randomUUID().toString(), type, d, sequence));
         } else if (op == 7) { // Reconnect
@@ -385,7 +454,7 @@ public final class GatewayClient {
             }
             if (ws != null) ws.sendClose(1000, "invalid session");
         } else if (op == 11) { // Heartbeat ACK
-            heartbeatMonitor.onAck();
+            heartbeatMonitor.onAck(System.currentTimeMillis());
         }
     }
 }
