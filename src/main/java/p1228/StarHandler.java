@@ -620,7 +620,15 @@ public final class StarHandler {
                 return;
             }
             if (interaction.type == 2) {
-                respondToCommand(interaction);
+                try {
+                    respondToCommand(interaction);
+                    ExecLog.log(interaction.commandName, interaction.guildId, interaction.channelId,
+                            interaction.userId, null);
+                } catch (Exception e) {
+                    ExecLog.log(interaction.commandName, interaction.guildId, interaction.channelId,
+                            interaction.userId, e.getMessage());
+                    throw e;
+                }
                 return;
             }
             return;

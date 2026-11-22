@@ -116,30 +116,14 @@ public final class Main {
             if (event.eventType().equals("INTERACTION_CREATE")) {
                 StarHandler.Interaction interaction = StarHandler.Interaction.fromPayload(event.payload());
                 if (interaction.type != 2) return;
-                switch (interaction.commandName) {
-                    case "join" -> {
-                        String channelId = interaction.optionString("channel");
-                        if (channelId.isBlank()) {
-                            rest.reply(interaction, "接続先ボイスチャンネルを指定してください。");
-                            return;
-                        }
-                        service.join(interaction.guildId, channelId);
-                        rest.reply(interaction, "ボイスチャンネルへの接続要求を送信しました。");
-                    }
-                    case "leave" -> {
-                        service.leave(interaction.guildId);
-                        rest.reply(interaction, "ボイスチャンネルから退出しました。");
-                    }
-                    case "say" -> {
-                        String text = interaction.optionString("text");
-                        if (text.isBlank()) {
-                            rest.reply(interaction, "読み上げる文章を入力してください。");
-                            return;
-                        }
-                        service.speak(interaction.guildId, text, interaction.userId);
-                        rest.reply(interaction, "読み上げキューに追加しました。");
-                    }
-                    default -> rest.reply(interaction, "未実装のコマンドです: " + interaction.commandName);
+                try {
+                    executeReadAloudCommand(service, rest, interaction);
+                    ExecLog.log(interaction.commandName, interaction.guildId, interaction.channelId,
+                            interaction.userId, null);
+                } catch (Exception e) {
+                    ExecLog.log(interaction.commandName, interaction.guildId, interaction.channelId,
+                            interaction.userId, e.getMessage());
+                    throw e;
                 }
             } else if (event.eventType().equals("MESSAGE_CREATE")) {
                 Map<String, Object> message = event.payload();
@@ -152,6 +136,38 @@ public final class Main {
             // 実装時にここでルーティングする。現行は LogVoiceTransport のため不要。
         } catch (Exception e) {
             System.err.println("[read-aloud] event handling failed: " + e.getMessage());
+        }
+    }
+
+    // 読み上げ系 Bot のスラッシュコマンド実行。読み上げ対象のテキスト
+    // (say の文章など) はここでは記録しない (実行ログは ExecLog 側で
+    // コマンド名・ID・成否のみを出す)。
+    private static void executeReadAloudCommand(ReadAloud.ReadAloudService service, DiscordRest rest,
+                                                StarHandler.Interaction interaction) throws Exception {
+        switch (interaction.commandName) {
+            case "join" -> {
+                String channelId = interaction.optionString("channel");
+                if (channelId.isBlank()) {
+                    rest.reply(interaction, "接続先ボイスチャンネルを指定してください。");
+                    return;
+                }
+                service.join(interaction.guildId, channelId);
+                rest.reply(interaction, "ボイスチャンネルへの接続要求を送信しました。");
+            }
+            case "leave" -> {
+                service.leave(interaction.guildId);
+                rest.reply(interaction, "ボイスチャンネルから退出しました。");
+            }
+            case "say" -> {
+                String text = interaction.optionString("text");
+                if (text.isBlank()) {
+                    rest.reply(interaction, "読み上げる文章を入力してください。");
+                    return;
+                }
+                service.speak(interaction.guildId, text, interaction.userId);
+                rest.reply(interaction, "読み上げキューに追加しました。");
+            }
+            default -> rest.reply(interaction, "未実装のコマンドです: " + interaction.commandName);
         }
     }
 

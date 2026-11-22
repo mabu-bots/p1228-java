@@ -131,6 +131,7 @@ public final class P1228Test {
         testPresence();
         testRestRetries();
         testFatalCloseCodes();
+        testExecLog();
         System.out.println();
         System.out.println("===== 結果: " + passed + " passed / " + failed + " failed (合計 " + (passed + failed) + ") =====");
         if (failed > 0) {
@@ -1067,5 +1068,34 @@ public final class P1228Test {
                 GatewayClient.fatalCloseReason(4004).contains("認証失敗"));
         check("fatal-close: reason names disallowed intents",
                 GatewayClient.fatalCloseReason(4014).contains("許可されていないインテント"));
+    }
+
+    // ===== 24. コマンド実行ログ (ExecLog) =====
+    // 書式: [exec] <ISO時刻> cmd=<名> route=slash guild=<ID> channel=<ID>
+    //       user=<ID> result=<ok|error>。入力テキストは構造上含まれない。
+    private static void testExecLog() {
+        java.time.Instant now = java.time.Instant.parse("2026-11-23T00:00:00Z");
+        check("exec-log: ok line format",
+                ExecLog.format(now, "ping", "g1", "c1", "u1", null)
+                        .equals("[exec] 2026-11-23T00:00:00Z cmd=ping route=slash guild=g1 channel=c1 user=u1 result=ok"));
+        check("exec-log: error line carries summary",
+                ExecLog.format(now, "ai", "g1", "c1", "u1", "connection refused")
+                        .equals("[exec] 2026-11-23T00:00:00Z cmd=ai route=slash guild=g1 channel=c1 user=u1 result=error error=\"connection refused\""));
+        check("exec-log: blank ids become dash",
+                ExecLog.format(now, "ping", "", "", "", null)
+                        .equals("[exec] 2026-11-23T00:00:00Z cmd=ping route=slash guild=- channel=- user=- result=ok"));
+        check("exec-log: null error message becomes unknown error",
+                ExecLog.format(now, "ping", "g1", "c1", "u1", "")
+                        .contains("error=\"unknown error\""));
+        // 改行と引用符を含む失敗メッセージでも1行に収まり、引用符で書式が壊れない
+        String messy = ExecLog.format(now, "say", "g1", "c1", "u1", "line1\nline2 \"quoted\"");
+        check("exec-log: error summary stays on one line", !messy.contains("\n") && !messy.contains("line2 \"quoted\""));
+        check("exec-log: error summary replaces quotes", messy.contains("error=\"line1 line2 'quoted'\""));
+        // 長い失敗メッセージは切り詰められる
+        String longLine = ExecLog.format(now, "ai", "g1", "c1", "u1", "x".repeat(300));
+        check("exec-log: long error is truncated", longLine.length() < 260);
+        // 入力テキスト (プロンプト等) を渡す引数は無く、行に混入しない
+        check("exec-log: line has no free-text field",
+                !ExecLog.format(now, "ai", "g1", "c1", "u1", null).contains("prompt"));
     }
 }
