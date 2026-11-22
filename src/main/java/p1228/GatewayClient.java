@@ -149,8 +149,20 @@ public final class GatewayClient {
         scheduler.shutdownNow();
     }
 
+    // Gateway URL には API バージョンとエンコーディングの指定が必須。
+    // READY で返る resume_gateway_url はこの指定を含まない素の URL で、
+    // そのまま使うと Discord 側がセッションを認識できず、Resume が
+    // Invalid Session (op 9) や無応答になって永遠に成功しない
+    // (2026-11-22 の障害: RESUMED 0件のまま再接続ループ)。
+    // 実験で、指定を付けた場合のみ RESUMED が返ることを確認済み。
+    static String withGatewayParams(String url) {
+        if (url == null || url.contains("encoding=")) return url;
+        return url + (url.contains("?") ? "&" : "?") + "v=10&encoding=json";
+    }
+
     private void connect(String url) {
         if (!running) return;
+        url = withGatewayParams(url);
         logger.accept("[gateway:" + bot.id + "] connecting to " + url);
         sessionWatchdog.onAttempt(System.currentTimeMillis());
         scheduleReadyWatchdog();
@@ -186,8 +198,8 @@ public final class GatewayClient {
         if (!running) return;
         // onClose と onError の両方から呼ばれ得るため、予約済みなら二重に予約しない
         if (!reconnectScheduled.compareAndSet(false, true)) return;
-        // 再接続間隔は指数バックオフ (1, 2, 4, 8, 16 秒のあと最大30秒で頭打ち)
-        long delaySeconds = Math.min(30, 1L << Math.min(reconnectAttempts, 5));
+        // 再接続間隔は指数バックオフ (1, 2, 4, 8, 16, 32 秒のあと最大60秒で頭打ち)
+        long delaySeconds = Math.min(60, 1L << Math.min(reconnectAttempts, 6));
         reconnectAttempts++;
         logger.accept("[gateway:" + bot.id + "] reconnecting in " + delaySeconds + "s");
         scheduler.schedule(() -> {
@@ -197,14 +209,25 @@ public final class GatewayClient {
     }
 
     private void send(Map<String, Object> payload) {
-        WebSocket ws = webSocket;
+        send(webSocket, payload);
+    }
+
+    // 受信を処理している接続そのものへ送る。再接続が重なると
+    // webSocket フィールドは新しい接続に移っているため、フィールド経由で
+    // 送ると Identify / Resume が旧接続へ誤送信され、応答が返らないまま
+    // タイムアウトする事故になる。送信失敗は握り潰さずログに残す。
+    private void send(WebSocket ws, Map<String, Object> payload) {
         if (ws != null && !ws.isOutputClosed()) {
-            ws.sendText(Json.stringify(payload), true);
+            ws.sendText(Json.stringify(payload), true).whenComplete((ok, error) -> {
+                if (error != null) {
+                    logger.accept("[gateway:" + bot.id + "] send failed: " + error.getMessage());
+                }
+            });
         }
     }
 
     // ----- 2.1 Identify / Resume / Heartbeat -----
-    private void sendIdentify() {
+    private void sendIdentify(WebSocket ws) {
         Map<String, Object> presenceActivity = new LinkedHashMap<>();
         presenceActivity.put("name", bot.watching);
         presenceActivity.put("type", 3L); // 3 = Watching
@@ -224,11 +247,11 @@ public final class GatewayClient {
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("op", 2L);
         payload.put("d", d);
-        send(payload);
+        send(ws, payload);
         logger.accept("[gateway:" + bot.id + "] identify sent (intents=" + bot.intents + ")");
     }
 
-    private void sendResume() {
+    private void sendResume(WebSocket ws) {
         Map<String, Object> d = new LinkedHashMap<>();
         d.put("token", bot.token);
         d.put("session_id", sessionId);
@@ -236,11 +259,11 @@ public final class GatewayClient {
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("op", 6L);
         payload.put("d", d);
-        send(payload);
+        send(ws, payload);
         logger.accept("[gateway:" + bot.id + "] resume sent (session=" + sessionId + ", seq=" + sequence + ")");
     }
 
-    private void startHeartbeat(long intervalMillis) {
+    private void startHeartbeat(WebSocket ws, long intervalMillis) {
         // Hello のたびに呼ばれるため、前回の定期タスクが残っていれば
         // 先にキャンセルする (再接続を繰り返しても多重送信にならないように)。
         ScheduledFuture<?> previous = heartbeatTask;
@@ -252,14 +275,13 @@ public final class GatewayClient {
                 // ACKが1インターバル途絶えた = 接続が半死状態。閉じて
                 // 再接続 (可能ならResume) させる (レビューM-2)。
                 logger.accept("[gateway:" + bot.id + "] heartbeat ACK timeout; closing to reconnect");
-                WebSocket ws = webSocket;
                 if (ws != null) ws.sendClose(1001, "heartbeat ack timeout");
                 return;
             }
             Map<String, Object> payload = new LinkedHashMap<>();
             payload.put("op", 1L);
             payload.put("d", sequence < 0 ? null : sequence);
-            send(payload);
+            send(ws, payload);
             heartbeatMonitor.onSend(now);
         }, intervalMillis, intervalMillis, TimeUnit.MILLISECONDS);
     }
@@ -296,7 +318,7 @@ public final class GatewayClient {
                 String text = buffer.toString();
                 buffer.setLength(0);
                 try {
-                    handlePayload(Json.obj(Json.parse(text)));
+                    handlePayload(ws, Json.obj(Json.parse(text)));
                 } catch (Exception e) {
                     logger.accept("[gateway:" + bot.id + "] payload error: " + e.getMessage());
                 }
@@ -319,7 +341,7 @@ public final class GatewayClient {
         }
     }
 
-    private void handlePayload(Map<String, Object> payload) {
+    private void handlePayload(WebSocket ws, Map<String, Object> payload) {
         long op = Json.lng(payload.get("op"), -1);
         Object seqValue = payload.get("s");
         if (seqValue instanceof Number n) sequence = n.longValue();
@@ -330,10 +352,13 @@ public final class GatewayClient {
                 logger.accept("[gateway:" + bot.id + "] invalid heartbeat interval: " + interval);
                 return;
             }
-            reconnectAttempts = 0;
-            startHeartbeat(interval);
-            if (sessionId != null && resumeGatewayUrl != null) sendResume();
-            else sendIdentify();
+            // バックオフはここではリセットしない。以前は Hello でリセットして
+            // いたため、READY が来ない障害時に再接続間隔が常に1秒に戻り、
+            // 30秒タイムアウト + 1秒待ちのタイトなループを回し続けていた。
+            // リセットはセッション確立 (READY / RESUMED) のときだけ行う。
+            startHeartbeat(ws, interval);
+            if (sessionId != null && resumeGatewayUrl != null) sendResume(ws);
+            else sendIdentify(ws);
         } else if (op == 0) { // Dispatch
             String type = Json.str(payload.get("t"));
             if ("READY".equals(type)) {
@@ -342,14 +367,15 @@ public final class GatewayClient {
                 Map<String, Object> user = Json.obj(d.get("user"));
                 botUserId = Json.str(user.get("id"));
                 sessionWatchdog.onEstablished();
+                reconnectAttempts = 0;
                 logger.accept("[gateway:" + bot.id + "] READY session=" + sessionId + " user=" + botUserId);
             } else if ("RESUMED".equals(type)) {
                 sessionWatchdog.onEstablished();
+                reconnectAttempts = 0;
                 logger.accept("[gateway:" + bot.id + "] RESUMED session=" + sessionId);
             }
             listener.onEvent(new GatewayEvent(UUID.randomUUID().toString(), type, d, sequence));
         } else if (op == 7) { // Reconnect
-            WebSocket ws = webSocket;
             if (ws != null) ws.sendClose(1000, "reconnect requested");
         } else if (op == 9) { // Invalid Session
             if (!Json.bool(payload.get("d"))) {
@@ -357,7 +383,6 @@ public final class GatewayClient {
                 resumeGatewayUrl = null;
                 sequence = -1;
             }
-            WebSocket ws = webSocket;
             if (ws != null) ws.sendClose(1000, "invalid session");
         } else if (op == 11) { // Heartbeat ACK
             heartbeatMonitor.onAck();

@@ -127,6 +127,7 @@ public final class P1228Test {
         testHeartbeatMonitor();
         testSessionWatchdog();
         testRetryDelay();
+        testGatewayParams();
         System.out.println();
         System.out.println("===== 結果: " + passed + " passed / " + failed + " failed (合計 " + (passed + failed) + ") =====");
         if (failed > 0) {
@@ -887,5 +888,21 @@ public final class P1228Test {
         check("session: new attempt expires at its own deadline", watchdog.isExpired(130_000, 30_000));
         watchdog.reset();
         check("session: reset clears expiry", !watchdog.isExpired(999_999, 30_000));
+    }
+
+    // ===== 20. Gateway URL のパラメータ補完 (Resume 障害の修正) =====
+    // resume_gateway_url は v/encoding 指定を含まないため、そのまま使うと
+    // Resume が成立しない。connect 前に必ず補完されることを固定する。
+    private static void testGatewayParams() {
+        check("gateway-params: resume url gains params",
+                GatewayClient.withGatewayParams("wss://gateway-us-east1-b.discord.gg")
+                        .equals("wss://gateway-us-east1-b.discord.gg?v=10&encoding=json"));
+        check("gateway-params: primary url unchanged",
+                GatewayClient.withGatewayParams("wss://gateway.discord.gg/?v=10&encoding=json")
+                        .equals("wss://gateway.discord.gg/?v=10&encoding=json"));
+        check("gateway-params: existing query uses ampersand",
+                GatewayClient.withGatewayParams("wss://example.gg/?foo=bar")
+                        .equals("wss://example.gg/?foo=bar&v=10&encoding=json"));
+        check("gateway-params: null stays null", GatewayClient.withGatewayParams(null) == null);
     }
 }
