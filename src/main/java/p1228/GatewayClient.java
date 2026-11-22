@@ -99,6 +99,29 @@ public final class GatewayClient {
         }
     }
 
+    // 再接続しても回復しない致命的なクローズコード (Discord の Close
+    // Codes で再接続が無意味とされるもの)。トークン失効 (4004) や
+    // インテント不許可 (4013 / 4014) は、設定を直すまで何度接続しても
+    // 同じコードで閉じられるため、無限再接続をやめて停止する。
+    static boolean isFatalCloseCode(int statusCode) {
+        return switch (statusCode) {
+            case 4004, 4010, 4011, 4012, 4013, 4014 -> true;
+            default -> false;
+        };
+    }
+
+    static String fatalCloseReason(int statusCode) {
+        return switch (statusCode) {
+            case 4004 -> "認証失敗 (トークン失効・無効)";
+            case 4010 -> "無効なシャード";
+            case 4011 -> "シャーディング必須";
+            case 4012 -> "無効な API バージョン";
+            case 4013 -> "無効なインテント";
+            case 4014 -> "許可されていないインテント";
+            default -> "不明な致命的コード";
+        };
+    }
+
     // 全 Bot 統一のプレゼンス表示名: 「/help | {遅延}ms」。
     static String presenceName(long latencyMillis) {
         return "/help | " + Math.max(0, latencyMillis) + "ms";
@@ -234,6 +257,17 @@ public final class GatewayClient {
             if (ws != null) ws.sendClose(1001, "ready timeout");
             else scheduleReconnect();
         }, READY_TIMEOUT_MILLIS, TimeUnit.MILLISECONDS);
+    }
+
+    // 致命的クローズで停止する際に、残っている定期タスクを止める
+    // (閉じた接続への Heartbeat 送信や READY ウォッチドッグの誤発を防ぐ)。
+    private void cancelScheduledTasks() {
+        ScheduledFuture<?> heartbeat = heartbeatTask;
+        if (heartbeat != null) heartbeat.cancel(false);
+        ScheduledFuture<?> presence = presenceTask;
+        if (presence != null) presence.cancel(false);
+        ScheduledFuture<?> watchdog = readyWatchdogTask;
+        if (watchdog != null) watchdog.cancel(false);
     }
 
     private void scheduleReconnect() {
@@ -396,6 +430,19 @@ public final class GatewayClient {
         public CompletionStage<?> onClose(WebSocket ws, int statusCode, String reason) {
             logger.accept("[gateway:" + bot.id + "] websocket closed: " + statusCode + " " + reason);
             sessionEstablished = false;
+            if (running && isFatalCloseCode(statusCode)) {
+                // 致命的コードは再接続しても回復しないため、この Bot の
+                // 再接続だけを止める。プロセスは終了させない: 単一JVMに
+                // 3体が同居しており、終了させると正常な他 Bot まで pm2 の
+                // 再起動ループに巻き込まれる。検知はこの FATAL ログと、
+                // Discord 上でこの Bot がオフラインになることで行う。
+                running = false;
+                cancelScheduledTasks();
+                logger.accept("[gateway:" + bot.id + "] FATAL close code " + statusCode
+                        + " (" + fatalCloseReason(statusCode) + "); 再接続を停止しました。"
+                        + "トークンとインテント設定を確認してください");
+                return null;
+            }
             if (running) scheduleReconnect();
             return null;
         }

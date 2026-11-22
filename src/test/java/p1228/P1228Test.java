@@ -129,6 +129,8 @@ public final class P1228Test {
         testRetryDelay();
         testGatewayParams();
         testPresence();
+        testRestRetries();
+        testFatalCloseCodes();
         System.out.println();
         System.out.println("===== 結果: " + passed + " passed / " + failed + " failed (合計 " + (passed + failed) + ") =====");
         if (failed > 0) {
@@ -931,5 +933,139 @@ public final class P1228Test {
         Map<String, Object> activity = Json.obj(((List<?>) activities).get(0));
         check("presence: activity name unified", "/help | 42ms".equals(Json.str(activity.get("name"))));
         check("presence: activity type is watching (3)", Json.lng(activity.get("type"), -1) == 3);
+    }
+
+    // ===== 22. Discord REST のリトライ (5xx / ネットワークエラー) =====
+    // Aegis Discord Bot v1.5.2 と同じ意味論: 5xx と IOException のみ
+    // 最大3回まで再試行し、待機は 1秒 → 3秒。4xx は即失敗、429 は
+    // retry_after で1回だけ再送する。送信と待機を差し替えて検証する。
+    private static java.net.http.HttpResponse<String> fakeResponse(int status, String body) {
+        return new java.net.http.HttpResponse<>() {
+            @Override public int statusCode() { return status; }
+            @Override public java.net.http.HttpRequest request() { return null; }
+            @Override public java.util.Optional<java.net.http.HttpResponse<String>> previousResponse() {
+                return java.util.Optional.empty();
+            }
+            @Override public java.net.http.HttpHeaders headers() {
+                return java.net.http.HttpHeaders.of(Map.of(), (name, value) -> true);
+            }
+            @Override public String body() { return body; }
+            @Override public java.util.Optional<javax.net.ssl.SSLSession> sslSession() {
+                return java.util.Optional.empty();
+            }
+            @Override public java.net.URI uri() { return java.net.URI.create("https://example.invalid/"); }
+            @Override public java.net.http.HttpClient.Version version() {
+                return java.net.http.HttpClient.Version.HTTP_1_1;
+            }
+        };
+    }
+
+    // 応答 (HttpResponse) と失敗 (IOException) を順に返す送信モック。
+    private static final class ScriptedAttempt implements DiscordRest.SendAttempt {
+        private final java.util.ArrayDeque<Object> outcomes = new java.util.ArrayDeque<>();
+        private int calls = 0;
+
+        ScriptedAttempt(Object... outcomes) {
+            this.outcomes.addAll(List.of(outcomes));
+        }
+
+        int calls() { return calls; }
+
+        @Override
+        public java.net.http.HttpResponse<String> send() throws Exception {
+            calls++;
+            Object outcome = outcomes.poll();
+            if (outcome == null) throw new IllegalStateException("script exhausted");
+            if (outcome instanceof IOException io) throw io;
+            return (java.net.http.HttpResponse<String>) outcome;
+        }
+    }
+
+    private static void testRestRetries() throws Exception {
+        // リトライ対象ステータスと待機時間の純粋関数
+        check("rest-retry: 500 is retryable", DiscordRest.isRetryableStatus(500));
+        check("rest-retry: 503 is retryable", DiscordRest.isRetryableStatus(503));
+        check("rest-retry: 599 is retryable", DiscordRest.isRetryableStatus(599));
+        check("rest-retry: 200 is not retryable", !DiscordRest.isRetryableStatus(200));
+        check("rest-retry: 400 is not retryable", !DiscordRest.isRetryableStatus(400));
+        check("rest-retry: 404 is not retryable", !DiscordRest.isRetryableStatus(404));
+        check("rest-retry: 429 handled separately, not 5xx-retryable", !DiscordRest.isRetryableStatus(429));
+        check("rest-retry: backoff after 1st failure is 1000ms", DiscordRest.retryBackoffMillis(1) == 1000);
+        check("rest-retry: backoff after 2nd failure is 3000ms", DiscordRest.retryBackoffMillis(2) == 3000);
+        check("rest-retry: backoff stays 3000ms afterwards", DiscordRest.retryBackoffMillis(3) == 3000);
+        check("rest-retry: max attempts is 3", DiscordRest.MAX_ATTEMPTS == 3);
+
+        // 5xx → 成功: 2回送信し、待機は1秒
+        List<Long> sleeps = new ArrayList<>();
+        ScriptedAttempt attempt = new ScriptedAttempt(fakeResponse(503, ""), fakeResponse(200, "{}"));
+        var response = DiscordRest.sendWithRetries(attempt, sleeps::add);
+        check("rest-retry: 503 then 200 returns 200", response.statusCode() == 200);
+        check("rest-retry: 503 then 200 sent twice", attempt.calls() == 2);
+        check("rest-retry: 503 then 200 waited 1000ms", sleeps.equals(List.of(1000L)));
+
+        // 5xx が続く: 最大3回で打ち切り、最後の応答を返す (request が例外化する)
+        sleeps.clear();
+        attempt = new ScriptedAttempt(fakeResponse(500, ""), fakeResponse(502, ""), fakeResponse(503, ""));
+        response = DiscordRest.sendWithRetries(attempt, sleeps::add);
+        check("rest-retry: persistent 5xx returns last response", response.statusCode() == 503);
+        check("rest-retry: persistent 5xx stops at 3 attempts", attempt.calls() == 3);
+        check("rest-retry: persistent 5xx waited 1000ms then 3000ms", sleeps.equals(List.of(1000L, 3000L)));
+
+        // 4xx は即失敗 (再送しない)
+        sleeps.clear();
+        attempt = new ScriptedAttempt(fakeResponse(404, ""));
+        response = DiscordRest.sendWithRetries(attempt, sleeps::add);
+        check("rest-retry: 404 returned without retry", response.statusCode() == 404 && attempt.calls() == 1);
+        check("rest-retry: 404 does not wait", sleeps.isEmpty());
+
+        // ネットワークエラー → 成功
+        sleeps.clear();
+        attempt = new ScriptedAttempt(new IOException("connection reset"), fakeResponse(200, "{}"));
+        response = DiscordRest.sendWithRetries(attempt, sleeps::add);
+        check("rest-retry: IO error then 200 returns 200", response.statusCode() == 200);
+        check("rest-retry: IO error then 200 sent twice", attempt.calls() == 2);
+        check("rest-retry: IO error waited 1000ms", sleeps.equals(List.of(1000L)));
+
+        // ネットワークエラーが続く: 最大3回で例外を投げる
+        ScriptedAttempt failing = new ScriptedAttempt(
+                new IOException("boom1"), new IOException("boom2"), new IOException("boom3"));
+        checkThrows("rest-retry: persistent IO error throws after 3 attempts", "boom3",
+                () -> DiscordRest.sendWithRetries(failing, millis -> { }));
+        check("rest-retry: persistent IO error attempted 3 times", failing.calls() == 3);
+
+        // 429 は retry_after で1回だけ再送する (従来動作)
+        sleeps.clear();
+        attempt = new ScriptedAttempt(fakeResponse(429, "{\"retry_after\": 0.5}"), fakeResponse(200, "{}"));
+        response = DiscordRest.sendWithRetries(attempt, sleeps::add);
+        check("rest-retry: 429 then 200 returns 200", response.statusCode() == 200);
+        check("rest-retry: 429 resent once", attempt.calls() == 2);
+        check("rest-retry: 429 waited retry_after 500ms", sleeps.equals(List.of(500L)));
+
+        // 429 が続いても再送は1回まで
+        attempt = new ScriptedAttempt(fakeResponse(429, "{\"retry_after\": 0}"), fakeResponse(429, "{\"retry_after\": 0}"));
+        response = DiscordRest.sendWithRetries(attempt, millis -> { });
+        check("rest-retry: second 429 is not resent", response.statusCode() == 429 && attempt.calls() == 2);
+    }
+
+    // ===== 23. Gateway 致命的クローズコード =====
+    // トークン失効 (4004) とインテント不許可 (4013 / 4014) 等は再接続
+    // しても回復しないため、停止判定が true になることを固定する。
+    private static void testFatalCloseCodes() {
+        check("fatal-close: 4004 authentication failed", GatewayClient.isFatalCloseCode(4004));
+        check("fatal-close: 4010 invalid shard", GatewayClient.isFatalCloseCode(4010));
+        check("fatal-close: 4011 sharding required", GatewayClient.isFatalCloseCode(4011));
+        check("fatal-close: 4012 invalid API version", GatewayClient.isFatalCloseCode(4012));
+        check("fatal-close: 4013 invalid intents", GatewayClient.isFatalCloseCode(4013));
+        check("fatal-close: 4014 disallowed intents", GatewayClient.isFatalCloseCode(4014));
+        check("fatal-close: 1000 normal closure is not fatal", !GatewayClient.isFatalCloseCode(1000));
+        check("fatal-close: 1001 going away is not fatal", !GatewayClient.isFatalCloseCode(1001));
+        check("fatal-close: 4000 unknown error is not fatal", !GatewayClient.isFatalCloseCode(4000));
+        check("fatal-close: 4007 invalid seq is not fatal", !GatewayClient.isFatalCloseCode(4007));
+        check("fatal-close: 4008 rate limited is not fatal", !GatewayClient.isFatalCloseCode(4008));
+        check("fatal-close: 4009 session timeout is not fatal", !GatewayClient.isFatalCloseCode(4009));
+        check("fatal-close: reason names authentication failure",
+                GatewayClient.fatalCloseReason(4004).contains("認証失敗"));
+        check("fatal-close: reason names disallowed intents",
+                GatewayClient.fatalCloseReason(4014).contains("許可されていないインテント"));
     }
 }

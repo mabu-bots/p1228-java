@@ -1,5 +1,6 @@
 package p1228;
 
+import java.io.IOException;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -47,9 +48,10 @@ public final class DiscordRest implements StarHandler.DiscordOps {
     }
 
     // ===== 2. 低レベルリクエスト =====
-    // 429 (レート制限) のときは retry_after だけ待って1回だけ再試行する
-    // (レビューM-3)。待機は最大5秒に抑え、インタラクション応答の
-    // 制限時間 (初回応答3秒・トークン有効15分) を大きく圧迫しないようにする。
+    // リトライは sendWithRetries が担う。429 (レート制限) のときは
+    // retry_after だけ待って1回だけ再送する (レビューM-3)。待機は最大5秒に
+    // 抑え、インタラクション応答の制限時間 (初回応答3秒・トークン有効15分)
+    // を大きく圧迫しないようにする。
     static long clampRetryDelayMillis(double retryAfterSeconds) {
         if (retryAfterSeconds < 0 || Double.isNaN(retryAfterSeconds)) retryAfterSeconds = 1.0;
         return Math.min(5000L, (long) (retryAfterSeconds * 1000));
@@ -82,7 +84,7 @@ public final class DiscordRest implements StarHandler.DiscordOps {
                 .uri(URI.create(API_BASE + path))
                 .timeout(Duration.ofSeconds(30))
                 .header("Authorization", "Bot " + token)
-                .header("User-Agent", "DiscordBot (p1228-java, 1.0)");
+                .header("User-Agent", "DiscordBot (p1228-java, 1.1)");
         if (body != null) {
             builder.header("Content-Type", "application/json");
             builder.method(method, HttpRequest.BodyPublishers.ofString(Json.stringify(body)));
@@ -92,12 +94,63 @@ public final class DiscordRest implements StarHandler.DiscordOps {
         return client.send(builder.build(), HttpResponse.BodyHandlers.ofString());
     }
 
-    private Map<String, Object> request(String method, String path, Object body) throws Exception {
-        HttpResponse<String> response = sendOnce(method, path, body);
-        if (response.statusCode() == 429) {
-            Thread.sleep(retryDelayMillis(response));
-            response = sendOnce(method, path, body);
+    // ----- 2.1 リトライ方針 (5xx / ネットワークエラー) -----
+    // Aegis Discord Bot v1.5.2 と同じ意味論: 5xx と IOException のみ
+    // 最大 MAX_ATTEMPTS 回まで再試行し、待機は 1秒 → 3秒。4xx は即失敗
+    // (request が例外を投げる)。429 は上記のとおり retry_after で1回だけ再送。
+    // 再送の安全性: 許可リスト操作は operation_id の冪等キャッシュで
+    // 二重実行を防いでおり (execute 参照)、PUT / DELETE / PATCH は操作
+    // 自体も冪等。POST send_message は、Discord が 5xx を返した時点では
+    // 未処理なのが通常であり、Aegis と同じ割り切りとする。
+    static final int MAX_ATTEMPTS = 3;
+
+    static boolean isRetryableStatus(int statusCode) {
+        return statusCode >= 500 && statusCode < 600;
+    }
+
+    // 失敗した試行番号 (1始まり) に対する、次の試行までの待機時間。
+    static long retryBackoffMillis(int failedAttempt) {
+        return failedAttempt <= 1 ? 1000L : 3000L;
+    }
+
+    @FunctionalInterface
+    interface SendAttempt {
+        HttpResponse<String> send() throws Exception;
+    }
+
+    @FunctionalInterface
+    interface Sleeper {
+        void sleep(long millis) throws InterruptedException;
+    }
+
+    // 送信と待機を差し替え可能にし、リトライ回数と待機をテストできるようにする。
+    static HttpResponse<String> sendWithRetries(SendAttempt attempt, Sleeper sleeper) throws Exception {
+        boolean retriedAfter429 = false;
+        for (int tries = 1; ; tries++) {
+            HttpResponse<String> response;
+            try {
+                response = attempt.send();
+            } catch (IOException e) {
+                if (tries >= MAX_ATTEMPTS) throw e;
+                sleeper.sleep(retryBackoffMillis(tries));
+                continue;
+            }
+            int status = response.statusCode();
+            if (status == 429 && !retriedAfter429) {
+                retriedAfter429 = true;
+                sleeper.sleep(retryDelayMillis(response));
+                continue;
+            }
+            if (isRetryableStatus(status) && tries < MAX_ATTEMPTS) {
+                sleeper.sleep(retryBackoffMillis(tries));
+                continue;
+            }
+            return response;
         }
+    }
+
+    private Map<String, Object> request(String method, String path, Object body) throws Exception {
+        HttpResponse<String> response = sendWithRetries(() -> sendOnce(method, path, body), Thread::sleep);
         if (response.statusCode() < 200 || response.statusCode() >= 300) {
             throw new IllegalStateException("Discord REST " + method + " " + path + " failed: HTTP " + response.statusCode());
         }
