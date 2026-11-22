@@ -1,6 +1,6 @@
 # 🌌 p1228 (Java版) — Discord BOT Gateway & Workers の単一JVM移植
 
-原本 [i-mabu/p1228](https://github.com/i-mabu/p1228) (Go Gateway + TypeScript Workers) と同一仕様の **Java 21 移植版**です。3体の Discord BOT を1つの Java プロセスで運用します。
+原本 [mabu-bots/p1228](https://github.com/mabu-bots/p1228) (Go Gateway + TypeScript Workers) と同一仕様の **Java 21 移植版**です。3体の Discord BOT を1つの Java プロセスで運用します。
 
 - 言語: **Java 21 / 標準ライブラリのみ（外部依存ゼロ・Maven/Gradle不要）**
 - 構成: 原本の Gateway / Worker 分離を単一JVMに統合しつつ、3体の役割はそのまま維持
@@ -8,6 +8,8 @@
 
 > [!WARNING]
 > **本番運用前の注意:** 原本と同様、Discord実接続、権限、Slash Command、Voice/DAVE の実環境検証は別途必要です。本リポジトリの検証はすべてオフラインで実施しています。
+
+📜 更新履歴: [CHANGELOG.md](CHANGELOG.md)
 
 ## ✨ BOT構成
 
@@ -140,7 +142,7 @@ p1228-java/
 <table>
   <tbody>
     <tr>
-      <td align="center" valign="top" width="14.28%"><a href="https://github.com/i-mabu"><img src="https://avatars.githubusercontent.com/u/356833989?v=4?s=100" width="100px;" alt="i-mabu"/><br /><sub><b>i-mabu</b></sub></a><br /><a href="https://github.com/i-mabu/p1228-java/commits?author=i-mabu" title="Code">💻</a></td>
+      <td align="center" valign="top" width="14.28%"><a href="https://github.com/i-mabu"><img src="https://avatars.githubusercontent.com/u/356833989?v=4?s=100" width="100px;" alt="i-mabu"/><br /><sub><b>i-mabu</b></sub></a><br /><a href="https://github.com/mabu-bots/p1228-java/commits?author=i-mabu" title="Code">💻</a></td>
     </tr>
   </tbody>
 </table>
