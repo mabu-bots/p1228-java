@@ -6,8 +6,8 @@
 - 構成: 原本の Gateway / Worker 分離を単一JVMに統合しつつ、3体の役割はそのまま維持
 - 永続化: SQLite の代わりにファイルベース Store (`data/store.json`) — Java標準ライブラリに SQLite ドライバがないための置換 (詳細は [DESIGN.md](./DESIGN.md))
 
-> [!WARNING]
-> **本番運用前の注意:** 原本と同様、Discord実接続、権限、Slash Command、Voice/DAVE の実環境検証は別途必要です。本リポジトリの検証はすべてオフラインで実施しています。
+> [!NOTE]
+> **運用状況:** v1.1.1 をもって現状の実装範囲で完成版として確定しています。2026-11-23 に本番環境（台1 yanagi）へデプロイ済みで、Discord 実接続（3体とも READY、Slash Command の応答）は実環境で確認済みです。Voice の実転送（UDP/Opus/DAVE）のみ未実装で、本バージョンでは対象外として確定しています（詳細は「正直な制約」参照）。
 
 📜 更新履歴: [CHANGELOG.md](CHANGELOG.md)
 
@@ -54,7 +54,7 @@
 ```bash
 cd p1228-java
 ./build.sh          # フルビルド: クリーンコンパイル+単体テスト+p1228.jar生成 (Windows は build.bat)
-./run.sh test       # 単体テストのみ (131件・ネットワーク不要。build.sh でも実行されます)
+./run.sh test       # 単体テストのみ (181件・ネットワーク不要。build.sh でも実行されます)
 ./run.sh commands   # BOTごとの Slash コマンド定義JSONを表示 (オフライン)
 ./run.sh demo       # フェイクDiscordで星燈機能を一通り動かす (オフライン)
 ```
@@ -78,17 +78,18 @@ cd p1228-java
 - `.env`: Token / Application ID / Worker Secret。`run` と `sync-commands` は厳格モードで読み込み、Token未設定・重複・プレースホルダ、Secret 32文字未満などをエラーにします。`commands` はオフライン用の緩和モードで読み込みます。
 - プロキシ環境では環境変数 `HTTPS_PROXY` / `HTTP_PROXY` を自動で読みます (Discord REST / Gateway / VOICEVOX 共通)。
 
-## 🧪 検証結果 (2026-11-17)
+## 🧪 検証結果 (2026-11-24、v1.1.1)
 
 - ✅ コンパイル成功 (Temurin JDK 21.0.13)
-- ✅ 単体テスト **82/82 パス** (JSON、Config検証、ポイント獲得/クールダウン/日次上限/台帳重複排除、抽選の勝敗・冪等リプレイ、おみくじの日次1回・冪等、ショップの検証/購入/残高不足/所有済み/pending再試行/付与完了の冪等、設定・辞書マージ、コマンド定義、Store再読み込み、Handlerの welcome/autorole/blacklist/sticky/VCログ/ロールパネル)
+- ✅ 単体テスト **181/181 パス** (JSON、Config検証、ポイント獲得/クールダウン/日次上限/台帳重複排除、抽選の勝敗・冪等リプレイ、おみくじの日次1回・冪等、ショップの検証/購入/残高不足/所有済み/pending再試行/付与完了の冪等、設定・辞書マージ、コマンド定義、Store再読み込み、Handlerの welcome/autorole/blacklist/sticky/VCログ/ロールパネル、RESTリトライ、Gateway致命的クローズコード判定、コマンド実行ログ書式)
+- ✅ 本番環境（台1 yanagi）で稼働中 (2026-11-23 デプロイ、3体とも READY・切断0件を確認)
 - ✅ `./run.sh commands` で3 BOT分の定義JSONが出力されることを確認
 - ✅ `./run.sh demo` で GUILD_CREATE → 管理コマンド → 参加/メッセージ/おみくじ/ショップ表示/VCログ/読み上げ の一連の流れをフェイクDiscordで確認
 
 ## ⚠️ 正直な制約 (未実装・未検証)
 
-- **Discord実接続は未検証です。** Gateway WebSocket クライアント (Hello/Heartbeat/Identify/Resume/再接続) と REST クライアントは実装済みですが、この開発VMでは Java プロセスからの直接TCPが権限設定で遮断されるため、実接続の確認はできていません。通常のPC/VPS環境では標準 `HttpClient` / `WebSocket` で動作する想定です。
-- **Discord Voice の実転送は未実装です。** UDP/Opus/DAVE暗号化は Java 標準ライブラリだけでは実装できないため、`/join` `/leave` `/say` のロジック、設定・辞書適用、VOICEVOX合成、ギルド別キューは `VoiceTransport` インターフェースの手前まで実装し、既定実装はログ出力のみです。原本リポジトリでも Voice/DAVE E2E は未検証と明記されています。
+- **Discord実接続は本番環境で確認済みです。** 2026-11-23 に台1 yanagi へデプロイし、3体とも READY・切断0件で稼働していることを確認しました（開発VMからは Java プロセスの直接TCPが遮断されるため、実接続の確認は本番環境側で行っています）。
+- **Discord Voice の実転送は未実装で、v1.1.1 では対象外として確定しています。** UDP/Opus/DAVE暗号化は Java 標準ライブラリだけでは実装できないため、`/join` `/leave` `/say` のロジック、設定・辞書適用、VOICEVOX合成、ギルド別キューは `VoiceTransport` インターフェースの手前まで実装し、既定実装はログ出力のみです。原本リポジトリでも Voice/DAVE E2E は未検証と明記されています。
 - **永続化は SQLite ではなく単一JSONファイルです。** 全状態を `data/store.json` にアトミックに書き出します。原本のような複数プロセスからの同時アクセスは想定していません (単一JVM専用)。
 - 原本の内部API (Worker認証、イベントリース/ACK、Inbox保持) は単一JVM化に伴い直接メソッド呼び出しに置換されています。Interaction 応答は `interaction_ref` 経由ではなく Discord の Interaction Callback / Webhook へ直接送ります。
 - 読み上げテキスト整形 (URL・メンション等の簡略化) は原本より簡略化した実装です。音声キャッシュも実装していません。
@@ -122,7 +123,7 @@ p1228-java/
     GatewayClient.java Gateway WebSocketクライアント
     ProxySupport.java  環境変数プロキシ対応
   src/test/java/p1228/
-    P1228Test.java     単体テスト 97件
+    P1228Test.java     単体テスト 181件
   data/                store.json (自動生成・Git管理外)
 ```
 

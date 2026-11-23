@@ -84,7 +84,7 @@ public final class DiscordRest implements StarHandler.DiscordOps {
                 .uri(URI.create(API_BASE + path))
                 .timeout(Duration.ofSeconds(30))
                 .header("Authorization", "Bot " + token)
-                .header("User-Agent", "DiscordBot (p1228-java, 1.1)");
+                .header("User-Agent", "DiscordBot (p1228-java, 1.1.1)");
         if (body != null) {
             builder.header("Content-Type", "application/json");
             builder.method(method, HttpRequest.BodyPublishers.ofString(Json.stringify(body)));
