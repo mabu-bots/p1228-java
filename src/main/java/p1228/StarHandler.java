@@ -14,7 +14,7 @@ import java.util.Set;
 // 永続化は Store / StarFeatures を直接使う (単一JVM構成のため)。
 public final class StarHandler {
 
-    // ----- 1.1 Discord操作の境界 -----
+    // ----- Discord操作の境界 -----
     public interface DiscordOps {
         String sendMessage(String channelId, String content, Object components, String operationId) throws Exception;
 
@@ -47,7 +47,7 @@ public final class StarHandler {
         String chat(String prompt) throws Exception;
     }
 
-    // ----- 1.2 イベントとインタラクションの型 -----
+    // ----- イベントとインタラクションの型 -----
     public static final class Event {
         public String eventId = "";
         public String eventType = "";
@@ -127,7 +127,7 @@ public final class StarHandler {
         }
     }
 
-    // ----- 1.3 共有状態 (原本のモジュール内キャッシュ相当) -----
+    // ----- 共有状態 (原本のモジュール内キャッシュ相当) -----
     private final Store store;
     private final StarFeatures features;
     private final DiscordOps ops;
@@ -468,7 +468,7 @@ public final class StarHandler {
         reply(interaction, message);
     }
 
-    // ----- 4.1 AI会話 (/ai) -----
+    // ----- AI会話 (/ai) -----
     // LLM の応答生成には時間がかかるため、先に defer で応答を保留し、
     // 生成が終わってから元の応答を編集して回答を届ける。生成に失敗した
     // 場合も編集で失敗メッセージを届け、理由は log に残す。
@@ -512,7 +512,7 @@ public final class StarHandler {
         return true;
     }
 
-    // ----- 5.1 コンポーネント処理 (ロールパネル) -----
+    // ----- コンポーネント処理 (ロールパネル) -----
     public void handleComponent(Interaction interaction) throws Exception {
         String guildId = interaction.guildId;
         String userId = interaction.userId;
@@ -552,7 +552,7 @@ public final class StarHandler {
         }
     }
 
-    // ----- 5.2 スティッキーの移動 -----
+    // ----- スティッキーの移動 -----
     // 保存済みの message_id は、まず空文字へ条件付きで差し替えてから旧メッセージを
     // 削除し、新規投稿する。呼び出し側は戻り値の新IDを、expectedOld="" の
     // 条件付き更新で保存する (一連の流れで「現在のIDが期待どおりのときだけ
@@ -667,7 +667,7 @@ public final class StarHandler {
         handleVcAuto(event, payload, settings, guildId, userId, oldChannel, newChannel);
     }
 
-    // ===== 6.1 VC自動生成 (Join to Create) =====
+    // ===== VC自動生成 (Join to Create) =====
     // ロビーVCへの参加を検知して専用の一時VCを作り、本人のみを移動させる。
     // 一時VCは全員が退出した時点で削除する。権限不足などで Discord 操作が
     // 失敗しても Bot 本体は落とさず、理由をログに残す。

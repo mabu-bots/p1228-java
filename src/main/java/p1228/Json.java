@@ -18,7 +18,7 @@ public final class Json {
         this.s = s;
     }
 
-    // ----- 1.1 Parse -----
+    // ----- Parse -----
     public static Object parse(String text) {
         Json p = new Json(text);
         p.skipWs();
@@ -130,7 +130,7 @@ public final class Json {
         }
     }
 
-    // ----- 1.2 Access helpers -----
+    // ----- Access helpers -----
     @SuppressWarnings("unchecked")
     public static Map<String, Object> obj(Object o) {
         return o instanceof Map ? (Map<String, Object>) o : new LinkedHashMap<>();
@@ -172,7 +172,7 @@ public final class Json {
         return map != null && map.containsKey(key) && map.get(key) != null;
     }
 
-    // ----- 1.3 Stringify helpers -----
+    // ----- Stringify helpers -----
     public static String escape(String v) {
         StringBuilder sb = new StringBuilder();
         for (char c : v.toCharArray()) {

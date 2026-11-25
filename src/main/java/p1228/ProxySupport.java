@@ -25,7 +25,7 @@ public final class ProxySupport {
 
     private ProxySupport() {}
 
-    // ----- 1.1 プロキシ解決 -----
+    // ----- プロキシ解決 -----
     private static String envProxy() {
         for (String key : new String[]{"HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"}) {
             String v = System.getenv(key);

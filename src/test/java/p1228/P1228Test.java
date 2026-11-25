@@ -20,7 +20,7 @@ import java.util.Random;
 // StarHandler / ReadAloud / Commands を検証する。
 public final class P1228Test {
 
-    // ----- 1.1 テスト基盤 -----
+    // ----- テスト基盤 -----
     private static int passed = 0;
     private static int failed = 0;
     private static final List<String> failures = new ArrayList<>();
@@ -754,7 +754,7 @@ public final class P1228Test {
         return payload;
     }
 
-    // ===== 12.1 VCログのカテゴリー別・チャンネル別 無効化 (off) =====
+    // ===== VCログのカテゴリー別・チャンネル別 無効化 (off) =====
     private static void testVoiceLogOff() throws Exception {
         Map<String, Object> settings = new LinkedHashMap<>();
         settings.put("log.voice", "common");
@@ -786,7 +786,7 @@ public final class P1228Test {
                 ops.replies.stream().anyMatch(r -> r.contains("でのみ使えます")));
     }
 
-    // ===== 12.2 VC自動生成 (Join to Create) =====
+    // ===== VC自動生成 (Join to Create) =====
     private static void testVcAuto() throws Exception {
         Store store = new Store(tempDir().resolve("store.json"));
         MutableClock clock = new MutableClock(Instant.parse("2026-11-17T00:00:00Z"));

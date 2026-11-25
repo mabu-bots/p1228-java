@@ -22,7 +22,7 @@ import java.util.concurrent.ConcurrentHashMap;
 // Webhook エンドポイントへ直接送る (DESIGN.md 参照)。
 public final class DiscordRest implements StarHandler.DiscordOps {
 
-    // ----- 1.1 許可リストと状態 -----
+    // ----- 許可リストと状態 -----
     public static final Set<String> ALLOWLIST = Set.of(
             "send_message", "edit_message", "delete_message", "sync_commands", "add_role", "remove_role",
             "create_channel", "delete_channel", "move_member");
@@ -97,7 +97,7 @@ public final class DiscordRest implements StarHandler.DiscordOps {
         return client.send(builder.build(), HttpResponse.BodyHandlers.ofString());
     }
 
-    // ----- 2.1 リトライ方針 (5xx / ネットワークエラー) -----
+    // ----- リトライ方針 (5xx / ネットワークエラー) -----
     // Aegis Discord Bot v1.5.2 と同じ意味論: 5xx と IOException のみ
     // 最大 MAX_ATTEMPTS 回まで再試行し、待機は 1秒 → 3秒。4xx は即失敗
     // (request が例外を投げる)。429 は上記のとおり retry_after で1回だけ再送。
@@ -290,7 +290,7 @@ public final class DiscordRest implements StarHandler.DiscordOps {
         execute("move_member", fields, operationId);
     }
 
-    // ----- 4.1 Interaction 応答 (単一JVMのため直接REST) -----
+    // ----- Interaction 応答 (単一JVMのため直接REST) -----
     @Override
     public void reply(StarHandler.Interaction interaction, String content) throws Exception {
         Map<String, Object> data = new LinkedHashMap<>();

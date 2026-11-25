@@ -17,7 +17,7 @@ import java.util.regex.Pattern;
 // 行わないが、構造検証・重複チェック・長さチェックは可能な範囲で行う。
 public final class Config {
 
-    // ----- 1.1 型定義 -----
+    // ----- 型定義 -----
     public static final class Gateway {
         public String listenAddress = "127.0.0.1";
         public int listenPort = 8787;
@@ -65,7 +65,7 @@ public final class Config {
         return "general".equals(botId) ? 33411L : 33409L;
     }
 
-    // ----- 1.2 .env と環境変数の解決 -----
+    // ----- .env と環境変数の解決 -----
     public static Map<String, String> loadEnv(Path configDir) {
         // 実際の環境変数を土台にし、.env は未設定のキーだけを補う
         // (putIfAbsent で読み込むため、環境変数が常に優先される)。
@@ -115,7 +115,7 @@ public final class Config {
         return t.isEmpty() || t.startsWith("REPLACE_ME") || t.startsWith("REPLACE");
     }
 
-    // ----- 1.3 読み込み -----
+    // ----- 読み込み -----
     public static Config load(Path path, boolean strict) throws IOException {
         return load(path, strict, loadEnv(path == null ? null : path.toAbsolutePath().getParent()));
     }
@@ -155,7 +155,7 @@ public final class Config {
             """;
     }
 
-    // ----- 1.4 JSONからの構築と検証 (Go config.go 移植) -----
+    // ----- JSONからの構築と検証 (Go config.go 移植) -----
     public static Config fromJson(Map<String, Object> root, boolean strict, Map<String, String> env) {
         Config c = new Config();
         Map<String, Object> gw = Json.obj(root.get("gateway"));

@@ -192,7 +192,7 @@ public final class Main {
         }
     }
 
-    // ===== 4.1 voice-test (Voice 実転送の無人確認) =====
+    // ===== voice-test (Voice 実転送の無人確認) =====
     // 引数なし: 言ノ葉 (read_aloud_a) が参加しているギルドと VC を
     // ID と名前だけで一覧する。引数あり: 指定 VC へ接続し、短いテスト
     // 音声を1回だけ流して退出する。トークン等の秘密情報は出力しない。
@@ -312,7 +312,7 @@ public final class Main {
     }
 
     // ===== 5. demo (オフライン模擬実行) =====
-    // ----- 5.1 フェイク DiscordOps -----
+    // ----- フェイク DiscordOps -----
     static final class FakeOps implements StarHandler.DiscordOps {
         final List<String> actions = new ArrayList<>();
         private int messageCounter = 0;

@@ -18,7 +18,7 @@ import java.util.TreeMap;
 // アトミックに書き換える。再起動時はファイルから全状態を復元する。
 public final class Store {
 
-    // ----- 1.1 型定義 -----
+    // ----- 型定義 -----
     public static final class StickyMessage {
         public String guildId = "";
         public String channelId = "";
@@ -68,7 +68,7 @@ public final class Store {
         public long revision = 0;
     }
 
-    // ----- 1.2 内部状態 -----
+    // ----- 内部状態 -----
     private final Path file;
     // guild_id -> (key -> JSON値)
     final Map<String, Map<String, Object>> guildSettings = new LinkedHashMap<>();
@@ -108,7 +108,7 @@ public final class Store {
         return file;
     }
 
-    // ----- 1.3 読み込みと保存 -----
+    // ----- 読み込みと保存 -----
     private void load() {
         if (file == null || !Files.isRegularFile(file)) return;
         try {
@@ -324,7 +324,7 @@ public final class Store {
         save();
     }
 
-    // ----- 2.1 ブラックリスト -----
+    // ----- ブラックリスト -----
     public synchronized void addBlacklist(String guildId, String userId, String reason) {
         if (guildId == null || guildId.isBlank() || userId == null || userId.isBlank()
                 || (reason != null && reason.codePointCount(0, reason.length()) > 500)) {

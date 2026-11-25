@@ -15,7 +15,7 @@ public final class Commands {
 
     private Commands() {}
 
-    // ----- 1.1 定義用ヘルパー -----
+    // ----- 定義用ヘルパー -----
     private static Map<String, Object> option(String name, String description, int type, boolean required, Map<String, Object> extra) {
         Map<String, Object> o = new LinkedHashMap<>();
         o.put("name", name);

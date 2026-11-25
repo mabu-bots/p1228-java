@@ -29,7 +29,7 @@ public final class ReadAloud {
 
     private ReadAloud() {}
 
-    // ----- 1.1 設定の型とマージ -----
+    // ----- 設定の型とマージ -----
     public static final class Settings {
         public boolean enabled = false;
         public double speed = 1.0;
@@ -74,7 +74,7 @@ public final class ReadAloud {
         return mergeSettings(scopes);
     }
 
-    // ----- 1.2 辞書 (長い単語を先に置換・上位スコープ優先) -----
+    // ----- 辞書 (長い単語を先に置換・上位スコープ優先) -----
     public static List<Store.DictionaryEntry> mergeDictionary(Store store, String guildId, String userId) {
         Map<String, Store.DictionaryEntry> byWord = new LinkedHashMap<>();
         for (Store.DictionaryEntry e : store.getDictionary("global", "global")) byWord.put(e.word(), e);
@@ -98,7 +98,7 @@ public final class ReadAloud {
         return value;
     }
 
-    // ----- 1.3 読み上げ用テキスト整形 -----
+    // ----- 読み上げ用テキスト整形 -----
     // URL・メンション・チャンネル参照・カスタム絵文字を読み上げ向けに
     // 簡略化する (原本より簡略化した実装であることを README に明記)。
     public static String cleanTextForReading(String raw) {

@@ -18,7 +18,7 @@ import java.util.Random;
 // Clock と Random を注入可能にし、オフラインで決定的に検証できる。
 public final class StarFeatures {
 
-    // ----- 1.1 型定義 -----
+    // ----- 型定義 -----
     public record GameSettings(long pointsPerMessage, long cooldownSeconds, long dailyLimit,
                                long lotteryCost, long lotteryPrize, long lotteryChance) {
         public static GameSettings defaults() {
@@ -89,7 +89,7 @@ public final class StarFeatures {
         store.pointLedger.put(eventKey, entry);
     }
 
-    // ----- 1.2 冪等記録の保持上限 (レビューM-1) -----
+    // ----- 冪等記録の保持上限 (レビューM-1) -----
     // 台帳・アクション記録はインタラクション再送や Resume 再生への備えで、
     // 保持すべきは直近分だけでよい。上限なく増え続けると store.json が
     // 肥大化し保存も重くなるため、上限を超えたら古いものから間引く
@@ -273,7 +273,7 @@ public final class StarFeatures {
         }
     }
 
-    // ----- 5.1 購入処理 -----
+    // ----- 購入処理 -----
     // Go版 BuyShopItem: 購入時は role_status=pending で記録し、課金は1回だけ。
     // pending のまま再試行した場合は追加課金なしで付与再試行を返す。
     public BuyResult buyShopItem(String guildId, String userId, String itemId, String eventId) {

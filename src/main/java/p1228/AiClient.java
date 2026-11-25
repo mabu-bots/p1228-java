@@ -17,7 +17,7 @@ import java.util.Map;
 // リクエストタイムアウトは長め (120秒) に取る。
 public final class AiClient implements StarHandler.AiChat {
 
-    // ----- 1.1 定数と状態 -----
+    // ----- 定数と状態 -----
     public static final String SYSTEM_PROMPT =
             "あなたはDiscordボット『星燈』に組み込まれたAIアシスタントです。日本語で簡潔に答えてください。";
 
@@ -34,7 +34,7 @@ public final class AiClient implements StarHandler.AiChat {
         return baseUrl;
     }
 
-    // ----- 1.2 応答生成 -----
+    // ----- 応答生成 -----
     @Override
     public String chat(String prompt) throws Exception {
         if (prompt == null || prompt.isBlank()) throw new IllegalArgumentException("AI prompt is empty");

@@ -27,7 +27,7 @@ import java.util.function.Consumer;
 // 実接続は未検証 (原本も Discord 実接続は未検証)。構造は完成させてある。
 public final class GatewayClient {
 
-    // ----- 1.1 型定義と状態 -----
+    // ----- 型定義と状態 -----
     public record GatewayEvent(String eventId, String eventType, Map<String, Object> payload, long sequence) {}
 
     public interface EventListener {
@@ -302,7 +302,7 @@ public final class GatewayClient {
         }
     }
 
-    // ----- 2.1 Identify / Resume / Heartbeat -----
+    // ----- Identify / Resume / Heartbeat -----
     private void sendIdentify(WebSocket ws) {
         // Identify 時点では遅延は未測定のため 0ms 表示。確立後に
         // Presence Update で実測値に置き換わる。
