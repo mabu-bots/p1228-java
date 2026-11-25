@@ -1300,7 +1300,7 @@ public final class P1228Test {
                 java.util.Arrays.equals(VoiceCrypto.xchachaDecrypt(key, nonce, aad, encrypted), plaintext));
 
         // AES-256-GCM の往復
-        byte[] gcmKey = hex("000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f");
+        byte[] gcmKey = hex("000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f");
         byte[] gcmNonce = hex("a0a1a2a3a4a5a6a7a8a9aaab");
         byte[] gcmEncrypted = VoiceCrypto.aesGcmEncrypt(gcmKey, gcmNonce, aad, plaintext);
         check("voice crypto: aes-gcm decrypt roundtrip",
