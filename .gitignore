@@ -5,5 +5,4 @@ data/
 sources.txt
 *.class
 
-# ネイティブライブラリ等のバイナリ依存（容量が大きいため git 対象外）
-lib/
+# lib/ は CI ビルドに必要な vendored 依存（concentus jar / libdave.so）のため追跡対象にする
