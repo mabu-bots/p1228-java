@@ -13,7 +13,9 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
 // ===== 1. DiscordRest (Discord REST クライアント) =====
-// 原本 Gateway の DiscordOperation 許可リストと同じ6操作だけを許可する。
+// 原本 Gateway の DiscordOperation 許可リスト (6操作) に、Java版独自機能
+// である VC自動生成 (Join to Create) 用の3操作 (create_channel /
+// delete_channel / move_member) を追加した許可リストで運用する。
 // operation_id による冪等キャッシュを持ち、同じ operation_id の再送では
 // Discord へ再リクエストしない。単一JVM構成のため、Interaction 応答は
 // interaction_ref 経由ではなく Discord の Interaction Callback /
@@ -22,7 +24,8 @@ public final class DiscordRest implements StarHandler.DiscordOps {
 
     // ----- 1.1 許可リストと状態 -----
     public static final Set<String> ALLOWLIST = Set.of(
-            "send_message", "edit_message", "delete_message", "sync_commands", "add_role", "remove_role");
+            "send_message", "edit_message", "delete_message", "sync_commands", "add_role", "remove_role",
+            "create_channel", "delete_channel", "move_member");
 
     public static final String API_BASE = "https://discord.com/api/v10";
 
@@ -191,6 +194,21 @@ public final class DiscordRest implements StarHandler.DiscordOps {
                     "/guilds/" + Json.str(fields.get("guild_id")) + "/members/" + Json.str(fields.get("user_id")) + "/roles/" + Json.str(fields.get("role_id")), null);
             case "remove_role" -> request("DELETE",
                     "/guilds/" + Json.str(fields.get("guild_id")) + "/members/" + Json.str(fields.get("user_id")) + "/roles/" + Json.str(fields.get("role_id")), null);
+            // 以下3操作は VC自動生成 (Java版独自機能) 用の追加分。
+            case "create_channel" -> {
+                Map<String, Object> body = new LinkedHashMap<>();
+                body.put("name", Json.str(fields.get("name")));
+                body.put("type", 2L); // 2 = GUILD_VOICE
+                String parentId = Json.str(fields.get("parent_id"));
+                if (!parentId.isBlank()) body.put("parent_id", parentId);
+                yield request("POST", "/guilds/" + Json.str(fields.get("guild_id")) + "/channels", body);
+            }
+            case "delete_channel" -> request("DELETE", "/channels/" + Json.str(fields.get("channel_id")), null);
+            case "move_member" -> {
+                Map<String, Object> body = new LinkedHashMap<>();
+                body.put("channel_id", Json.str(fields.get("channel_id")));
+                yield request("PATCH", "/guilds/" + Json.str(fields.get("guild_id")) + "/members/" + Json.str(fields.get("user_id")), body);
+            }
             default -> throw new IllegalArgumentException("operation is not allowlisted: " + operation);
         };
         if (operationId != null && !operationId.isBlank()) {
@@ -244,6 +262,32 @@ public final class DiscordRest implements StarHandler.DiscordOps {
         fields.put("user_id", userId);
         fields.put("role_id", roleId);
         execute("remove_role", fields, operationId);
+    }
+
+    @Override
+    public String createVoiceChannel(String guildId, String name, String parentId, String operationId) throws Exception {
+        Map<String, Object> fields = new LinkedHashMap<>();
+        fields.put("guild_id", guildId);
+        fields.put("name", name);
+        if (parentId != null) fields.put("parent_id", parentId);
+        Map<String, Object> result = execute("create_channel", fields, operationId);
+        return Json.str(result.get("id"));
+    }
+
+    @Override
+    public void deleteChannel(String channelId, String operationId) throws Exception {
+        Map<String, Object> fields = new LinkedHashMap<>();
+        fields.put("channel_id", channelId);
+        execute("delete_channel", fields, operationId);
+    }
+
+    @Override
+    public void moveMember(String guildId, String userId, String channelId, String operationId) throws Exception {
+        Map<String, Object> fields = new LinkedHashMap<>();
+        fields.put("guild_id", guildId);
+        fields.put("user_id", userId);
+        fields.put("channel_id", channelId);
+        execute("move_member", fields, operationId);
     }
 
     // ----- 4.1 Interaction 応答 (単一JVMのため直接REST) -----

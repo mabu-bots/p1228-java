@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# p1228-java フルビルドスクリプト (JDK 21 が必要)
+# p1228-java フルビルドスクリプト (JDK 25 が必要: FFM の正式版を使うため)
 # 使い方: ./build.sh              -> クリーンビルド + 単体テスト + p1228.jar 生成
 #         ./build.sh --skip-tests -> テストを省略 (notest でも可)
 set -euo pipefail
@@ -15,19 +15,19 @@ find_jdk_home() {
     (cd "$(dirname "$p")/.." && pwd); return
   fi
   local c
-  for c in "$HOME/workspace/tools/jdk-21" /usr/lib/jvm/java-21* /usr/lib/jvm/jdk-21* /usr/lib/jvm/*; do
+  for c in "$HOME/workspace/tools/jdk-25" /usr/lib/jvm/java-25* /usr/lib/jvm/jdk-25* /usr/lib/jvm/*; do
     if [ -x "$c/bin/javac" ]; then echo "${c%/}"; return; fi
   done
   return 1
 }
 JDK_HOME="$(find_jdk_home)" || {
-  echo "javac が見つかりません。JDK 21 をインストールするか JAVA_HOME を設定してください。" >&2; exit 1; }
+  echo "javac が見つかりません。JDK 25 をインストールするか JAVA_HOME を設定してください。" >&2; exit 1; }
 JAVAC="$JDK_HOME/bin/javac"; JAR="$JDK_HOME/bin/jar"; JAVA="$JDK_HOME/bin/java"
 echo "Using JDK: $JDK_HOME"
 "$JAVAC" -version
 VER="$("$JAVAC" -version 2>&1 | sed -E 's/^javac ([0-9]+).*/\1/')"
-if [ "${VER:-0}" -lt 21 ] 2>/dev/null; then
-  echo "JDK 21 以上が必要です (検出バージョン: $VER)。" >&2; exit 1
+if [ "${VER:-0}" -lt 25 ] 2>/dev/null; then
+  echo "JDK 25 以上が必要です (検出バージョン: $VER)。FFM (java.lang.foreign) の正式版を使うためです。" >&2; exit 1
 fi
 
 SKIP_TESTS=0
@@ -40,13 +40,19 @@ rm -f p1228.jar
 mkdir -p out
 
 # ===== 3. コンパイル (main + test) =====
+# Concentus (純Java Opus) は vendored jar をクラスパスに載せる。
+CONCENTUS_JAR="lib/concentus-1.0.2.jar"
 echo "== Compile =="
 find src/main/java src/test/java -name '*.java' > out/sources.txt
-"$JAVAC" -encoding UTF-8 -d out @out/sources.txt
+"$JAVAC" -encoding UTF-8 -cp "$CONCENTUS_JAR" -d out @out/sources.txt
 rm -f out/sources.txt
+# Concentus のクラスと libdave を out へ展開し、単一 jar に同梱する。
+(cd out && "$JAR" xf "../$CONCENTUS_JAR")
+mkdir -p out/native/linux-x86-64
+cp lib/native/linux-x86-64/libdave.so out/native/linux-x86-64/libdave.so
 
 # ===== 4. 単体テスト =====
-JAVA_OPTS="-Dfile.encoding=UTF-8 -Dstdout.encoding=UTF-8 -Dstderr.encoding=UTF-8"
+JAVA_OPTS="-Dfile.encoding=UTF-8 -Dstdout.encoding=UTF-8 -Dstderr.encoding=UTF-8 --enable-native-access=ALL-UNNAMED"
 if [ "$SKIP_TESTS" -eq 0 ]; then
   echo "== Test: p1228.P1228Test =="
   "$JAVA" $JAVA_OPTS -cp out p1228.P1228Test
@@ -55,8 +61,11 @@ else
 fi
 
 # ===== 5. パッケージ =====
+# Enable-Native-Access: libdave (FFM) のネイティブアクセス許可。
 echo "== Package =="
-"$JAR" cfe p1228.jar p1228.Main -C out .
+printf 'Manifest-Version: 1.0\nMain-Class: p1228.Main\nEnable-Native-Access: ALL-UNNAMED\n' > out/manifest.mf
+"$JAR" cfm p1228.jar out/manifest.mf -C out .
+rm -f out/manifest.mf
 
 SIZE="$(wc -c < p1228.jar | tr -d ' ')"
 echo "Build OK"

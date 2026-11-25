@@ -54,6 +54,15 @@ public final class Store {
 
     public record DictionaryEntry(String entryId, String word, String reading) {}
 
+    // VC自動生成 (Join to Create) が作った一時VCの記録。Bot 再起動後に
+    // 空のまま残った一時VCを掃除できるよう、ファイルへ永続化する。
+    public static final class TempVoiceChannel {
+        public String guildId = "";
+        public String channelId = "";
+        public String ownerId = "";
+        public String name = "";
+    }
+
     public static final class ReadAloudSettingEntry {
         public Map<String, Object> settings = new LinkedHashMap<>();
         public long revision = 0;
@@ -83,6 +92,8 @@ public final class Store {
     final Map<String, ReadAloudSettingEntry> readAloudSettings = new LinkedHashMap<>();
     // scope|scope_id -> entries
     final Map<String, List<DictionaryEntry>> dictionary = new LinkedHashMap<>();
+    // guild|channel -> 一時VC
+    final Map<String, TempVoiceChannel> tempVoiceChannels = new LinkedHashMap<>();
 
     static String key(String... parts) {
         return String.join("|", parts);
@@ -178,6 +189,15 @@ public final class Store {
                 }
                 dictionary.put(e.getKey(), entries);
             }
+            for (Object o : Json.arr(root.get("temp_voice_channels"))) {
+                Map<String, Object> m = Json.obj(o);
+                TempVoiceChannel t = new TempVoiceChannel();
+                t.guildId = Json.str(m.get("guild_id"));
+                t.channelId = Json.str(m.get("channel_id"));
+                t.ownerId = Json.str(m.get("owner_id"));
+                t.name = Json.str(m.get("name"));
+                tempVoiceChannels.put(key(t.guildId, t.channelId), t);
+            }
         } catch (IOException ex) {
             throw new IllegalStateException("failed to load store: " + file, ex);
         }
@@ -263,6 +283,16 @@ public final class Store {
             dict.put(k, list);
         });
         root.put("dictionary", dict);
+        List<Object> temps = new ArrayList<>();
+        for (TempVoiceChannel t : tempVoiceChannels.values()) {
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("guild_id", t.guildId);
+            m.put("channel_id", t.channelId);
+            m.put("owner_id", t.ownerId);
+            m.put("name", t.name);
+            temps.add(m);
+        }
+        root.put("temp_voice_channels", temps);
         try {
             if (file.getParent() != null) Files.createDirectories(file.getParent());
             Path tmp = file.resolveSibling(file.getFileName() + ".tmp");
@@ -392,7 +422,45 @@ public final class Store {
         save();
     }
 
-    // ===== 5. ショップ補助 (テスト・運用向け) =====
+    // ===== 5. 一時VC (VC自動生成) =====
+    public synchronized void putTempVoiceChannel(TempVoiceChannel temp) {
+        if (temp.guildId.isBlank() || temp.channelId.isBlank()) {
+            throw new IllegalArgumentException("guild_id and channel_id are required");
+        }
+        TempVoiceChannel copy = new TempVoiceChannel();
+        copy.guildId = temp.guildId;
+        copy.channelId = temp.channelId;
+        copy.ownerId = temp.ownerId;
+        copy.name = temp.name;
+        tempVoiceChannels.put(key(copy.guildId, copy.channelId), copy);
+        save();
+    }
+
+    public synchronized TempVoiceChannel getTempVoiceChannel(String guildId, String channelId) {
+        TempVoiceChannel t = tempVoiceChannels.get(key(guildId, channelId));
+        if (t == null) return null;
+        TempVoiceChannel copy = new TempVoiceChannel();
+        copy.guildId = t.guildId;
+        copy.channelId = t.channelId;
+        copy.ownerId = t.ownerId;
+        copy.name = t.name;
+        return copy;
+    }
+
+    public synchronized void removeTempVoiceChannel(String guildId, String channelId) {
+        tempVoiceChannels.remove(key(guildId, channelId));
+        save();
+    }
+
+    public synchronized List<TempVoiceChannel> listTempVoiceChannels(String guildId) {
+        List<TempVoiceChannel> result = new ArrayList<>();
+        for (TempVoiceChannel t : tempVoiceChannels.values()) {
+            if (t.guildId.equals(guildId)) result.add(getTempVoiceChannel(t.guildId, t.channelId));
+        }
+        return result;
+    }
+
+    // ===== 6. ショップ補助 (テスト・運用向け) =====
     public synchronized void setShopItemEnabled(String guildId, String itemId, boolean enabled) {
         Map<String, ShopItem> items = shopItems.get(guildId);
         if (items != null && items.containsKey(itemId)) {

@@ -120,6 +120,8 @@ public final class P1228Test {
         testCommands();
         testStorePersistence();
         testHandler();
+        testVoiceLogOff();
+        testVcAuto();
         testAiHandler();
         testAiClient();
         testEarnSkipsSaveWhenUnchanged();
@@ -132,6 +134,9 @@ public final class P1228Test {
         testRestRetries();
         testFatalCloseCodes();
         testExecLog();
+        testVoiceCrypto();
+        testAudioFrames();
+        testDaveNative();
         System.out.println();
         System.out.println("===== 結果: " + passed + " passed / " + failed + " failed (合計 " + (passed + failed) + ") =====");
         if (failed > 0) {
@@ -454,7 +459,7 @@ public final class P1228Test {
 
     private static void testCommands() {
         check("commands: general bot command names", commandNames(Commands.forBot("general")).equals(
-                List.of("ping", "welcome", "goodbye", "autorole", "blacklist", "logs", "sticky", "role-panel",
+                List.of("ping", "welcome", "goodbye", "autorole", "blacklist", "logs", "vc-auto", "sticky", "role-panel",
                         "game-config", "omikuji", "points", "lottery", "shop", "buy", "ai")));
         check("commands: read-aloud bot command names", commandNames(Commands.forBot("read_aloud_a")).equals(
                 List.of("join", "leave", "say")) && commandNames(Commands.forBot("read_aloud_b")).equals(
@@ -487,8 +492,8 @@ public final class P1228Test {
         check("commands: ai is not an admin command", !Commands.isAdminCommand("ai", ""));
 
         Map<String, Object> ai = findCommand(Commands.forBot("general"), "ai");
-        check("commands: general has 15 commands including ai",
-                Commands.generalCommands().size() == 15 && ai != null);
+        check("commands: general has 16 commands including ai",
+                Commands.generalCommands().size() == 16 && ai != null);
         Map<String, Object> promptOption = ai == null ? null : Json.obj(Json.arr(ai.get("options")).get(0));
         check("commands: ai has required prompt option (max_length 500)", promptOption != null
                 && "prompt".equals(Json.str(promptOption.get("name")))
@@ -498,7 +503,7 @@ public final class P1228Test {
 
         check("commands: JSON serialization is valid JSON",
                 Json.obj(Json.parse(Commands.toJson("general"))).isEmpty()
-                        && Json.arr(Json.parse(Commands.toJson("general"))).size() == 15);
+                        && Json.arr(Json.parse(Commands.toJson("general"))).size() == 16);
     }
 
     // ===== 11. Store 永続化 =====
@@ -544,7 +549,12 @@ public final class P1228Test {
         final List<String> replies = new ArrayList<>();
         final List<String> deleted = new ArrayList<>();
         final List<String> flow = new ArrayList<>();
+        final List<String> createdChannels = new ArrayList<>();
+        final List<String> deletedChannels = new ArrayList<>();
+        final List<String> movedMembers = new ArrayList<>();
+        boolean failCreate = false;
         private int counter = 0;
+        private int vcCounter = 0;
 
         @Override public String sendMessage(String channelId, String content, Object components, String operationId) {
             sent.add(channelId + "|" + content);
@@ -560,6 +570,21 @@ public final class P1228Test {
         }
 
         @Override public void removeRole(String guildId, String userId, String roleId, String operationId) {}
+
+        @Override public String createVoiceChannel(String guildId, String name, String parentId, String operationId) {
+            if (failCreate) throw new IllegalStateException("Missing Permissions (fake)");
+            String id = "temp-vc-" + (++vcCounter);
+            createdChannels.add(guildId + "|" + id + "|" + name + "|" + parentId);
+            return id;
+        }
+
+        @Override public void deleteChannel(String channelId, String operationId) {
+            deletedChannels.add(channelId);
+        }
+
+        @Override public void moveMember(String guildId, String userId, String channelId, String operationId) {
+            movedMembers.add(guildId + "|" + userId + "|" + channelId);
+        }
 
         @Override public void reply(StarHandler.Interaction interaction, String content) {
             replies.add(content);
@@ -699,6 +724,142 @@ public final class P1228Test {
         store.setGuildSetting("g1", "role-panel:panel-msg", List.of("777"));
         handler.handleComponent(component);
         check("handler: registered role panel grants role", ops.roles.contains("g1|u1|777"));
+    }
+
+    private static StarHandler.Interaction adminInteraction(String command, String subcommand, Map<String, Object> options) {
+        StarHandler.Interaction it = new StarHandler.Interaction();
+        it.id = "int-" + command + "-" + subcommand;
+        it.type = 2;
+        it.guildId = "g1";
+        it.userId = "admin1";
+        it.permissions = "8";
+        it.commandName = command;
+        it.subcommandName = subcommand;
+        it.options.putAll(options);
+        return it;
+    }
+
+    private static Map<String, Object> voicePayload(String guildId, String userId, String username, String channelId, boolean bot) {
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("guild_id", guildId);
+        payload.put("user_id", userId);
+        if (channelId != null) payload.put("channel_id", channelId);
+        Map<String, Object> user = new LinkedHashMap<>();
+        user.put("id", userId);
+        user.put("username", username);
+        if (bot) user.put("bot", true);
+        Map<String, Object> member = new LinkedHashMap<>();
+        member.put("user", user);
+        payload.put("member", member);
+        return payload;
+    }
+
+    // ===== 12.1 VCログのカテゴリー別・チャンネル別 無効化 (off) =====
+    private static void testVoiceLogOff() throws Exception {
+        Map<String, Object> settings = new LinkedHashMap<>();
+        settings.put("log.voice", "common");
+        settings.put("log.voice.category.cat1", "off");
+        check("vc log off: category off suppresses fallback to common",
+                StarHandler.resolveVoiceLogChannel(settings, "vc1", "cat1").isEmpty());
+        settings.put("log.voice.channel.vc1", "special");
+        check("vc log off: channel destination beats category off",
+                StarHandler.resolveVoiceLogChannel(settings, "vc1", "cat1").equals("special"));
+        settings.put("log.voice.channel.vc1", "off");
+        settings.put("log.voice.category.cat1", "catlog");
+        check("vc log off: channel off beats category destination",
+                StarHandler.resolveVoiceLogChannel(settings, "vc1", "cat1").isEmpty());
+        check("vc log off: no overrides still resolves common",
+                StarHandler.resolveVoiceLogChannel(settings, "vc2", "cat2").equals("common"));
+
+        Store store = new Store(tempDir().resolve("store.json"));
+        MutableClock clock = new MutableClock(Instant.parse("2026-11-17T00:00:00Z"));
+        StarFeatures features = new StarFeatures(store, clock, new FixedRandom(0));
+        RecordingOps ops = new RecordingOps();
+        StarHandler handler = new StarHandler(store, features, ops, null);
+        handler.respondToCommand(adminInteraction("logs", "off", Map.of("event", "voice_category", "target_id", "cat1")));
+        check("vc log off: /logs off stores sentinel",
+                "off".equals(Json.str(store.getGuildSettings("g1").get("log.voice.category.cat1"))));
+        check("vc log off: /logs off replies confirmation",
+                ops.replies.stream().anyMatch(r -> r.contains("無効にしました")));
+        handler.respondToCommand(adminInteraction("logs", "off", Map.of("event", "member_join", "target_id", "cat1")));
+        check("vc log off: /logs off rejects non-voice events",
+                ops.replies.stream().anyMatch(r -> r.contains("でのみ使えます")));
+    }
+
+    // ===== 12.2 VC自動生成 (Join to Create) =====
+    private static void testVcAuto() throws Exception {
+        Store store = new Store(tempDir().resolve("store.json"));
+        MutableClock clock = new MutableClock(Instant.parse("2026-11-17T00:00:00Z"));
+        StarFeatures features = new StarFeatures(store, clock, new FixedRandom(0));
+        RecordingOps ops = new RecordingOps();
+        StarHandler handler = new StarHandler(store, features, ops, null);
+
+        Map<String, Object> guild = new LinkedHashMap<>();
+        guild.put("id", "g1");
+        guild.put("name", "テスト鯖");
+        guild.put("channels", List.of(
+                Map.of("id", "lobby1", "type", 2L, "parent_id", "cat1"),
+                Map.of("id", "cat1", "type", 4L)));
+        guild.put("members", List.of());
+        guild.put("voice_states", List.of());
+        handler.handleEvent(new StarHandler.Event("ge-vc", "GUILD_CREATE", guild));
+
+        // /vc-auto set で設定が保存される
+        handler.respondToCommand(adminInteraction("vc-auto", "set",
+                Map.of("lobby", "lobby1", "category", "cat1")));
+        Map<String, Object> vcAuto = Json.obj(store.getGuildSettings("g1").get("vc_auto"));
+        check("vc auto: /vc-auto set stores lobby and category",
+                "lobby1".equals(Json.str(vcAuto.get("lobby_channel_id"))) && "cat1".equals(Json.str(vcAuto.get("category_id"))));
+
+        // ロビー参加で一時VCが作られ、本人が移動する
+        handler.handleEvent(new StarHandler.Event("v1", "VOICE_STATE_UPDATE",
+                voicePayload("g1", "u1", "taro", "lobby1", false)));
+        check("vc auto: lobby join creates temp channel",
+                ops.createdChannels.size() == 1 && ops.createdChannels.get(0).equals("g1|temp-vc-1|taroのVC|cat1"));
+        check("vc auto: owner moved into temp channel",
+                ops.movedMembers.contains("g1|u1|temp-vc-1"));
+        check("vc auto: temp channel recorded in store",
+                store.getTempVoiceChannel("g1", "temp-vc-1") != null
+                        && "u1".equals(store.getTempVoiceChannel("g1", "temp-vc-1").ownerId));
+
+        // 移動完了イベント (ロビー→一時VC) では追加生成しない
+        handler.handleEvent(new StarHandler.Event("v2", "VOICE_STATE_UPDATE",
+                voicePayload("g1", "u1", "taro", "temp-vc-1", false)));
+        check("vc auto: move event does not create another channel", ops.createdChannels.size() == 1);
+
+        // Bot ユーザーのロビー参加は無視する
+        handler.handleEvent(new StarHandler.Event("v3", "VOICE_STATE_UPDATE",
+                voicePayload("g1", "bot1", "somebot", "lobby1", true)));
+        check("vc auto: bot join ignored", ops.createdChannels.size() == 1);
+
+        // 所有者が退出して空になったら削除する
+        handler.handleEvent(new StarHandler.Event("v4", "VOICE_STATE_UPDATE",
+                voicePayload("g1", "u1", "taro", null, false)));
+        check("vc auto: empty temp channel deleted", ops.deletedChannels.contains("temp-vc-1"));
+        check("vc auto: temp record removed after delete", store.getTempVoiceChannel("g1", "temp-vc-1") == null);
+
+        // 作成失敗 (権限不足) でもハンドラは落ちず、ログに残る
+        ops.failCreate = true;
+        handler.handleEvent(new StarHandler.Event("v5", "VOICE_STATE_UPDATE",
+                voicePayload("g1", "u2", "jiro", "lobby1", false)));
+        check("vc auto: create failure is logged, handler survives",
+                handler.logLines.stream().anyMatch(l -> l.contains("vc_auto_create_failed")));
+        ops.failCreate = false;
+
+        // 起動時掃除: 記録だけ残った空の一時VCは GUILD_CREATE で削除される
+        Store.TempVoiceChannel stale = new Store.TempVoiceChannel();
+        stale.guildId = "g1";
+        stale.channelId = "stale-vc";
+        stale.ownerId = "u9";
+        stale.name = "staleのVC";
+        store.putTempVoiceChannel(stale);
+        handler.handleEvent(new StarHandler.Event("ge-vc2", "GUILD_CREATE", guild));
+        check("vc auto: stale empty temp channel cleaned on guild create",
+                ops.deletedChannels.contains("stale-vc") && store.getTempVoiceChannel("g1", "stale-vc") == null);
+
+        // /vc-auto off で設定が消える
+        handler.respondToCommand(adminInteraction("vc-auto", "off", Map.of()));
+        check("vc auto: /vc-auto off clears setting", store.getGuildSettings("g1").get("vc_auto") == null);
     }
 
     // ===== 13. StarHandler の /ai (フェイク AiChat) =====
@@ -1097,5 +1258,147 @@ public final class P1228Test {
         // 入力テキスト (プロンプト等) を渡す引数は無く、行に混入しない
         check("exec-log: line has no free-text field",
                 !ExecLog.format(now, "ai", "g1", "c1", "u1", null).contains("prompt"));
+    }
+
+    private static byte[] hex(String text) {
+        byte[] out = new byte[text.length() / 2];
+        for (int i = 0; i < out.length; i++) {
+            out[i] = (byte) Integer.parseInt(text.substring(i * 2, i * 2 + 2), 16);
+        }
+        return out;
+    }
+
+    private static String hex(byte[] bytes) {
+        StringBuilder sb = new StringBuilder();
+        for (byte b : bytes) sb.append(String.format("%02x", b));
+        return sb.toString();
+    }
+
+    // ===== 25. Voice トランスポート暗号 (VoiceCrypto) =====
+    private static void testVoiceCrypto() throws Exception {
+        // HChaCha20: draft-irtf-cfrg-xchacha-03 §2.2.1 のテストベクタ
+        byte[] subkey = VoiceCrypto.hchacha20(
+                hex("000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"),
+                hex("000000090000004a0000000031415927"));
+        check("voice crypto: hchacha20 test vector",
+                hex(subkey).equals("82413b4227b27bfed30e42508a877d73a0f9e4d58a74a853c12ec41326d3ecdc"));
+
+        // AEAD_XCHACHA20_POLY1305: 同ドラフト Appendix A.1 のテストベクタ
+        byte[] key = hex("808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9f");
+        byte[] nonce = hex("404142434445464748494a4b4c4d4e4f5051525354555657");
+        byte[] aad = hex("50515253c0c1c2c3c4c5c6c7");
+        byte[] plaintext = "Ladies and Gentlemen of the class of '99: If I could offer you only one tip for the future, sunscreen would be it."
+                .getBytes(java.nio.charset.StandardCharsets.US_ASCII);
+        byte[] encrypted = VoiceCrypto.xchachaEncrypt(key, nonce, aad, plaintext);
+        check("voice crypto: xchacha20-poly1305 test vector",
+                hex(encrypted).equals("bd6d179d3e83d43b9576579493c0e939572a1700252bfaccbed2902c21396cbb"
+                        + "731c7f1b0b4aa6440bf3a82f4eda7e39ae64c6708c54c216cb96b72e1213b452"
+                        + "2f8c9ba40db5d945b11b69b982c1bb9e3f3fac2bc369488f76b2383565d3fff9"
+                        + "21f9664c97637da9768812f615c68b13b52e"
+                        + "c0875924c1c7987947deafd8780acf49"));
+        check("voice crypto: xchacha decrypt roundtrip",
+                java.util.Arrays.equals(VoiceCrypto.xchachaDecrypt(key, nonce, aad, encrypted), plaintext));
+
+        // AES-256-GCM の往復
+        byte[] gcmKey = hex("000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f");
+        byte[] gcmNonce = hex("a0a1a2a3a4a5a6a7a8a9aaab");
+        byte[] gcmEncrypted = VoiceCrypto.aesGcmEncrypt(gcmKey, gcmNonce, aad, plaintext);
+        check("voice crypto: aes-gcm decrypt roundtrip",
+                java.util.Arrays.equals(VoiceCrypto.aesGcmDecrypt(gcmKey, gcmNonce, aad, gcmEncrypted), plaintext));
+
+        // rtpsize パケットの往復 (両モード) と改ざん検知
+        byte[] header = VoiceCrypto.rtpHeader(0x1234, 960, 0x01020304);
+        check("voice crypto: rtp header layout",
+                hex(header).equals("80781234000003c001020304"));
+        for (String mode : List.of(VoiceCrypto.MODE_AES_GCM, VoiceCrypto.MODE_XCHACHA)) {
+            VoiceCrypto.RtpEncryptor encryptor = new VoiceCrypto.RtpEncryptor(mode, gcmKey);
+            byte[] frame = hex("f8fffe1122334455");
+            byte[] packet = encryptor.encryptPacket(header, frame);
+            check("voice crypto: rtpsize roundtrip " + mode,
+                    java.util.Arrays.equals(VoiceCrypto.RtpEncryptor.decryptPacket(mode, gcmKey, packet), frame));
+            byte[] tampered = packet.clone();
+            tampered[14] ^= 1;
+            boolean detected = false;
+            try {
+                VoiceCrypto.RtpEncryptor.decryptPacket(mode, gcmKey, tampered);
+            } catch (Exception e) {
+                detected = true;
+            }
+            check("voice crypto: rtpsize tamper detected " + mode, detected);
+            // nonce カウンタが増えるため同じ平文でもパケットが変わる
+            byte[] second = encryptor.encryptPacket(header, frame);
+            check("voice crypto: rtpsize nonce increments " + mode, !java.util.Arrays.equals(packet, second));
+        }
+    }
+
+    // ===== 26. 音声フレーム変換 (AudioFrames) =====
+    private static byte[] sineWav(int rate, int samples, double freq) throws Exception {
+        java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream();
+        out.write("RIFF".getBytes(java.nio.charset.StandardCharsets.US_ASCII));
+        out.write(java.nio.ByteBuffer.allocate(4).order(java.nio.ByteOrder.LITTLE_ENDIAN).putInt(36 + samples * 2).array());
+        out.write("WAVEfmt ".getBytes(java.nio.charset.StandardCharsets.US_ASCII));
+        out.write(java.nio.ByteBuffer.allocate(4).order(java.nio.ByteOrder.LITTLE_ENDIAN).putInt(16).array());
+        java.nio.ByteBuffer fmt = java.nio.ByteBuffer.allocate(16).order(java.nio.ByteOrder.LITTLE_ENDIAN);
+        fmt.putShort((short) 1);
+        fmt.putShort((short) 1);
+        fmt.putInt(rate);
+        fmt.putInt(rate * 2);
+        fmt.putShort((short) 2);
+        fmt.putShort((short) 16);
+        out.write(fmt.array());
+        out.write("data".getBytes(java.nio.charset.StandardCharsets.US_ASCII));
+        out.write(java.nio.ByteBuffer.allocate(4).order(java.nio.ByteOrder.LITTLE_ENDIAN).putInt(samples * 2).array());
+        java.nio.ByteBuffer pcm = java.nio.ByteBuffer.allocate(samples * 2).order(java.nio.ByteOrder.LITTLE_ENDIAN);
+        for (int i = 0; i < samples; i++) {
+            pcm.putShort((short) (Math.sin(2 * Math.PI * freq * i / (double) rate) * 10000));
+        }
+        out.write(pcm.array());
+        return out.toByteArray();
+    }
+
+    private static void testAudioFrames() throws Exception {
+        byte[] wav = sineWav(24_000, 24_000, 440); // 24kHz mono 1秒
+        AudioFrames.PcmAudio parsed = AudioFrames.parseWav(wav);
+        check("audio frames: wav parsed", parsed.sampleRate() == 24_000 && parsed.channels() == 1
+                && parsed.samples().length == 24_000);
+        short[] stereo = AudioFrames.toStereo48k(parsed);
+        check("audio frames: resampled to 48k stereo", stereo.length == 96_000);
+        // リサンプル後も信号のエネルギーが残っている (無音化していない)
+        long energy = 0;
+        for (short s : stereo) energy += (long) s * s;
+        check("audio frames: resample keeps signal energy", energy > 1_000_000_000L);
+
+        List<byte[]> frames = AudioFrames.encodeWavToOpusFrames(wav);
+        check("audio frames: 1s becomes 50 opus frames", frames.size() == 50);
+        // Concentus のデコーダで往復でき、無音でないことを確認する
+        io.github.jaredmdobson.concentus.OpusDecoder decoder =
+                new io.github.jaredmdobson.concentus.OpusDecoder(48_000, 2);
+        short[] decoded = new short[960 * 2];
+        int decodedSamples = decoder.decode(frames.get(10), 0, frames.get(10).length, decoded, 0, 960, false);
+        long decodedEnergy = 0;
+        for (int i = 0; i < decodedSamples * 2; i++) decodedEnergy += (long) decoded[i] * decoded[i];
+        check("audio frames: opus roundtrip decodes with signal", decodedSamples == 960 && decodedEnergy > 1_000_000L);
+        check("audio frames: silence frame constant",
+                java.util.Arrays.equals(AudioFrames.SILENCE_FRAME, new byte[]{(byte) 0xF8, (byte) 0xFF, (byte) 0xFE}));
+    }
+
+    // ===== 27. libdave バインディング (DaveNative) =====
+    // ネイティブライブラリが同梱されている環境でのみ意味を持つ。
+    // ロードできなければ、その事実自体を失敗として報告する (黙って通さない)。
+    private static void testDaveNative() {
+        check("dave native: libdave loads", DaveNative.isAvailable());
+        if (!DaveNative.isAvailable()) return;
+        DaveNative nativeLib = DaveNative.get();
+        check("dave native: max protocol version >= 1", nativeLib.maxSupportedProtocolVersion() >= 1);
+        DaveNative.Session session = nativeLib.createSession(1, 1548977830493163523L, "123456789012345678");
+        byte[] keyPackage = nativeLib.getKeyPackage(session);
+        check("dave native: key package generated", keyPackage != null && keyPackage.length > 100);
+        DaveNative.Encryptor encryptor = nativeLib.createEncryptor();
+        check("dave native: no key ratchet before group established", !nativeLib.encryptorHasKeyRatchet(encryptor));
+        check("dave native: ratchet refresh reports not ready",
+                !nativeLib.refreshRatchet(session, encryptor, "123456789012345678"));
+        encryptor.close();
+        session.close();
+        check("dave native: session closed cleanly", !session.isOpen());
     }
 }

@@ -112,7 +112,16 @@ public final class Commands {
                         option("target_id", "VCのカテゴリーIDまたはチャンネルID（VC種別の場合）", 3))),
                 subcommand("disable", "ログ送信先を解除", List.of(
                         option("event", "ログ種別", 3, true, extra("choices", logEventChoices())),
-                        option("target_id", "VCのカテゴリーIDまたはチャンネルID（VC種別の場合）", 3))))));
+                        option("target_id", "VCのカテゴリーIDまたはチャンネルID（VC種別の場合）", 3))),
+                subcommand("off", "VCカテゴリー別・VCチャンネル別のVCログを無効化", List.of(
+                        option("event", "ログ種別（voice_category / voice_channel のみ）", 3, true, extra("choices", logEventChoices())),
+                        option("target_id", "無効化するカテゴリーIDまたはチャンネルID", 3, true))))));
+        commands.add(command("vc-auto", "VC自動生成（Join to Create）を設定します", List.of(
+                subcommand("set", "ロビーVCと生成先カテゴリーを設定", List.of(
+                        option("lobby", "参加を検知するロビーVC", 7, true, extra("channel_types", List.of(2L, 13L))),
+                        option("category", "一時VCの生成先カテゴリー", 7, true, extra("channel_types", List.of(4L))),
+                        option("name_template", "一時VCの名前テンプレート（{username} が使えます）", 3, false, extra("max_length", 100L)))),
+                subcommand("off", "VC自動生成を無効化", List.of()))));
         commands.add(command("sticky", "チャンネル下部に固定メッセージを表示します", List.of(
                 subcommand("set", "固定メッセージを設定", List.of(
                         option("channel", "対象チャンネル", 7, true, extra("channel_types", List.of(0L))),

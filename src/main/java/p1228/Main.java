@@ -28,6 +28,7 @@ public final class Main {
             case "demo" -> runDemo();
             case "sync-commands" -> syncCommands(configPath);
             case "run" -> run(configPath);
+            case "voice-test" -> runVoiceTest(configPath, args);
             case "test" -> System.out.println("テストは ./run.sh test で実行してください (p1228.P1228Test)。");
             default -> printHelp();
         }
@@ -42,6 +43,9 @@ public final class Main {
                   ./run.sh demo            フェイクDiscordで星燈機能を一通り動かす (オフライン)
                   ./run.sh sync-commands   Discordへ Slash コマンドを同期 (要Token・要ネットワーク)
                   ./run.sh run             3体の Gateway 接続を開始 (要Token・要ネットワーク)
+                  ./run.sh voice-test [guild_id channel_id]
+                                           引数なし: 言ノ葉が参加中のギルドとVC一覧を表示
+                                           引数あり: 指定VCへ接続し短いテスト音声を1回流して退出
                 設定: config.json + .env (Token / Application ID / Worker Secret)
                 """);
     }
@@ -97,20 +101,33 @@ public final class Main {
                 }, System.out::println);
                 clients.add(client);
             } else {
+                DiscordVoiceTransport transport = new DiscordVoiceTransport(System.out::println);
                 ReadAloud.ReadAloudService service = new ReadAloud.ReadAloudService(
                         store, new ReadAloud.VoiceVoxClient(config.voicevoxBaseUrl),
-                        new ReadAloud.LogVoiceTransport(System.out::println), System.out::println, true);
-                GatewayClient client = new GatewayClient(bot, event -> handleReadAloudEvent(service, rest, event),
+                        transport, System.out::println, true);
+                GatewayClient client = new GatewayClient(bot, event -> handleReadAloudEvent(service, rest, transport, event),
                         System.out::println);
+                transport.bindGateway(new DiscordVoiceTransport.MainGateway() {
+                    @Override
+                    public void updateVoiceState(String guildId, String channelId) {
+                        client.updateVoiceState(guildId, channelId);
+                    }
+
+                    @Override
+                    public String selfUserId() {
+                        return client.botUserId();
+                    }
+                });
                 clients.add(client);
             }
         }
         clients.forEach(GatewayClient::start);
-        System.out.println("p1228-java started: 3 bots connecting (Gateway実接続はこのVMでは未検証)");
+        System.out.println("p1228-java started: 3 bots connecting");
         latch.await();
     }
 
     private static void handleReadAloudEvent(ReadAloud.ReadAloudService service, DiscordRest rest,
+                                             DiscordVoiceTransport transport,
                                              GatewayClient.GatewayEvent event) {
         try {
             if (event.eventType().equals("INTERACTION_CREATE")) {
@@ -131,9 +148,13 @@ public final class Main {
                 if (Json.bool(author.get("bot"))) return;
                 service.maybeReadMessage(Json.str(message.get("guild_id")), Json.str(author.get("id")),
                         Json.str(message.get("content")));
+            } else if (event.eventType().equals("VOICE_STATE_UPDATE")) {
+                transport.onVoiceStateUpdate(event.payload());
+            } else if (event.eventType().equals("VOICE_SERVER_UPDATE")) {
+                transport.onVoiceServerUpdate(event.payload());
             }
-            // VOICE_STATE_UPDATE / VOICE_SERVER_UPDATE は実転送 (VoiceTransport)
-            // 実装時にここでルーティングする。現行は LogVoiceTransport のため不要。
+            // VOICE_STATE_UPDATE / VOICE_SERVER_UPDATE は Voice 実転送の
+            // 資格情報として DiscordVoiceTransport へ渡す。
         } catch (Exception e) {
             System.err.println("[read-aloud] event handling failed: " + e.getMessage());
         }
@@ -171,6 +192,125 @@ public final class Main {
         }
     }
 
+    // ===== 4.1 voice-test (Voice 実転送の無人確認) =====
+    // 引数なし: 言ノ葉 (read_aloud_a) が参加しているギルドと VC を
+    // ID と名前だけで一覧する。引数あり: 指定 VC へ接続し、短いテスト
+    // 音声を1回だけ流して退出する。トークン等の秘密情報は出力しない。
+    private static void runVoiceTest(Path configPath, String[] args) throws Exception {
+        Config config = Config.load(configPath, true);
+        Config.Bot bot = config.bots.get("read_aloud_a");
+        DiscordRest rest = new DiscordRest("read_aloud_a", bot.applicationId, bot.token);
+        DiscordVoiceTransport transport = new DiscordVoiceTransport(System.out::println);
+        List<Map<String, Object>> guildPayloads = new ArrayList<>();
+        GatewayClient client = new GatewayClient(bot, event -> {
+            if (event.eventType().equals("GUILD_CREATE")) {
+                synchronized (guildPayloads) {
+                    guildPayloads.add(event.payload());
+                }
+            } else if (event.eventType().equals("VOICE_STATE_UPDATE")) {
+                transport.onVoiceStateUpdate(event.payload());
+            } else if (event.eventType().equals("VOICE_SERVER_UPDATE")) {
+                transport.onVoiceServerUpdate(event.payload());
+            }
+        }, System.out::println);
+        transport.bindGateway(new DiscordVoiceTransport.MainGateway() {
+            @Override
+            public void updateVoiceState(String guildId, String channelId) {
+                client.updateVoiceState(guildId, channelId);
+            }
+
+            @Override
+            public String selfUserId() {
+                return client.botUserId();
+            }
+        });
+        client.start();
+        try {
+            long deadline = System.currentTimeMillis() + 20_000;
+            while (client.botUserId().isBlank() && System.currentTimeMillis() < deadline) Thread.sleep(100);
+            if (client.botUserId().isBlank()) {
+                System.out.println("voice-test: READY not received (bot user id unknown)");
+                return;
+            }
+            Thread.sleep(2000); // GUILD_CREATE の到着を少し待つ
+            if (args.length < 3) {
+                synchronized (guildPayloads) {
+                    for (Map<String, Object> guild : guildPayloads) {
+                        System.out.println("guild " + Json.str(guild.get("id")) + " " + Json.str(guild.get("name")));
+                        for (Object o : Json.arr(guild.get("channels"))) {
+                            Map<String, Object> channel = Json.obj(o);
+                            long type = Json.lng(channel.get("type"), -1);
+                            if (type == 2 || type == 13) {
+                                System.out.println("  voice " + Json.str(channel.get("id")) + " " + Json.str(channel.get("name")));
+                            }
+                        }
+                    }
+                }
+                return;
+            }
+            String guildId = args[1];
+            String channelId = args[2];
+            transport.join(guildId, channelId);
+            long connectDeadline = System.currentTimeMillis() + 20_000;
+            while (!transport.isConnected(guildId) && System.currentTimeMillis() < connectDeadline) Thread.sleep(100);
+            if (!transport.isConnected(guildId)) {
+                System.out.println("voice-test: connection not ready guild=" + guildId + " channel=" + channelId);
+                transport.leave(guildId);
+                return;
+            }
+            System.out.println("voice-test: connected guild=" + guildId + " channel=" + channelId
+                    + " dave_version=" + transport.negotiatedDaveVersion(guildId));
+            byte[] wav;
+            try {
+                ReadAloud.Settings settings = new ReadAloud.Settings();
+                wav = new ReadAloud.VoiceVoxClient(config.voicevoxBaseUrl).synthesize("音声テストです。", settings);
+                System.out.println("voice-test: synthesized by VOICEVOX (" + wav.length + " bytes)");
+            } catch (Exception voicevoxError) {
+                wav = toneWav();
+                System.out.println("voice-test: VOICEVOX unavailable (" + voicevoxError.getMessage() + "); using tone");
+            }
+            transport.play(guildId, wav);
+            System.out.println("voice-test: playback finished");
+            transport.leave(guildId);
+            Thread.sleep(500);
+        } finally {
+            client.stop();
+        }
+    }
+
+    // VOICEVOX が使えない場合のフォールバック: 24kHz mono 1秒の正弦波 WAV。
+    private static byte[] toneWav() {
+        int rate = 24_000;
+        int samples = rate;
+        java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream();
+        try {
+            out.write("RIFF".getBytes(java.nio.charset.StandardCharsets.US_ASCII));
+            int dataSize = samples * 2;
+            out.write(java.nio.ByteBuffer.allocate(4).order(java.nio.ByteOrder.LITTLE_ENDIAN).putInt(36 + dataSize).array());
+            out.write("WAVEfmt ".getBytes(java.nio.charset.StandardCharsets.US_ASCII));
+            out.write(java.nio.ByteBuffer.allocate(4).order(java.nio.ByteOrder.LITTLE_ENDIAN).putInt(16).array());
+            java.nio.ByteBuffer fmt = java.nio.ByteBuffer.allocate(16).order(java.nio.ByteOrder.LITTLE_ENDIAN);
+            fmt.putShort((short) 1);
+            fmt.putShort((short) 1);
+            fmt.putInt(rate);
+            fmt.putInt(rate * 2);
+            fmt.putShort((short) 2);
+            fmt.putShort((short) 16);
+            out.write(fmt.array());
+            out.write("data".getBytes(java.nio.charset.StandardCharsets.US_ASCII));
+            out.write(java.nio.ByteBuffer.allocate(4).order(java.nio.ByteOrder.LITTLE_ENDIAN).putInt(dataSize).array());
+            java.nio.ByteBuffer pcm = java.nio.ByteBuffer.allocate(dataSize).order(java.nio.ByteOrder.LITTLE_ENDIAN);
+            for (int i = 0; i < samples; i++) {
+                double envelope = Math.min(1.0, Math.min(i, samples - i) / 2000.0);
+                pcm.putShort((short) (Math.sin(2 * Math.PI * 440 * i / (double) rate) * 12000 * envelope));
+            }
+            out.write(pcm.array());
+        } catch (Exception e) {
+            throw new IllegalStateException(e);
+        }
+        return out.toByteArray();
+    }
+
     // ===== 5. demo (オフライン模擬実行) =====
     // ----- 5.1 フェイク DiscordOps -----
     static final class FakeOps implements StarHandler.DiscordOps {
@@ -198,6 +338,23 @@ public final class Main {
         @Override
         public void removeRole(String guildId, String userId, String roleId, String operationId) {
             actions.add("REMOVE_ROLE guild=" + guildId + " user=" + userId + " role=" + roleId);
+        }
+
+        @Override
+        public String createVoiceChannel(String guildId, String name, String parentId, String operationId) {
+            String id = "demo-temp-vc-" + (++messageCounter);
+            actions.add("CREATE_VC guild=" + guildId + " id=" + id + " name=" + name + " parent=" + parentId);
+            return id;
+        }
+
+        @Override
+        public void deleteChannel(String channelId, String operationId) {
+            actions.add("DELETE_CHANNEL channel=" + channelId);
+        }
+
+        @Override
+        public void moveMember(String guildId, String userId, String channelId, String operationId) {
+            actions.add("MOVE_MEMBER guild=" + guildId + " user=" + userId + " channel=" + channelId);
         }
 
         @Override

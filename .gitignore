@@ -4,3 +4,6 @@ data/
 .env
 sources.txt
 *.class
+
+# ネイティブライブラリ等のバイナリ依存（容量が大きいため git 対象外）
+lib/

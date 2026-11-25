@@ -24,6 +24,13 @@ public final class StarHandler {
 
         void removeRole(String guildId, String userId, String roleId, String operationId) throws Exception;
 
+        // VC自動生成 (Join to Create) 用。作成したチャンネルのIDを返す。
+        String createVoiceChannel(String guildId, String name, String parentId, String operationId) throws Exception;
+
+        void deleteChannel(String channelId, String operationId) throws Exception;
+
+        void moveMember(String guildId, String userId, String channelId, String operationId) throws Exception;
+
         void reply(Interaction interaction, String content) throws Exception;
 
         void ackComponent(Interaction interaction) throws Exception;
@@ -161,12 +168,32 @@ public final class StarHandler {
         return truncateToCodePoints(formatted, 2000);
     }
 
+    // VCログの送信先解決。優先順位は チャンネル別 > カテゴリー別 > 共通。
+    // 上書き値が "off" の場合は、その粒度でVCログ自体を無効化する
+    // (より具体的な粒度の送信先設定があればそちらが優先される)。
+    // 例: カテゴリーが "off" でも、チャンネル別の送信先があればそちらへ送る。
+    // チャンネル別が "off" なら、カテゴリー・共通の設定に関わらず送らない。
     public static String resolveVoiceLogChannel(Map<String, Object> settings, String channelId, String categoryId) {
         String channelOverride = Json.str(settings.get("log.voice.channel." + channelId));
-        String categoryOverride = (categoryId == null || categoryId.isBlank()) ? "" : Json.str(settings.get("log.voice.category." + categoryId));
+        if ("off".equals(channelOverride)) return "";
         if (!channelOverride.isBlank()) return channelOverride;
-        if (!categoryOverride.isBlank()) return categoryOverride;
+        if (categoryId != null && !categoryId.isBlank()) {
+            String categoryOverride = Json.str(settings.get("log.voice.category." + categoryId));
+            if ("off".equals(categoryOverride)) return "";
+            if (!categoryOverride.isBlank()) return categoryOverride;
+        }
         return Json.str(settings.get("log.voice"));
+    }
+
+    // 一時VCの名前生成。{username} / {user} を置換し、改行除去と
+    // Discord のチャンネル名上限 (100文字) への切り詰めを行う。
+    public static String buildTempChannelName(String template, String username) {
+        String name = (template == null || template.isBlank()) ? "{username}のVC" : template;
+        String user = username == null ? "" : username;
+        name = name.replace("{username}", user).replace("{user}", user);
+        name = name.replaceAll("[\\r\\n]+", " ").trim();
+        if (name.isBlank()) name = "一時VC";
+        return truncateToCodePoints(name, 100);
     }
 
     public static String eventGuildId(String eventType, Map<String, Object> payload) {
@@ -267,12 +294,39 @@ public final class StarHandler {
                     reply(interaction, "VCカテゴリー別・チャンネル別の設定には target_id が必要です。");
                     return;
                 }
-                if ("disable".equals(interaction.subcommandName)) {
+                if ("off".equals(interaction.subcommandName)) {
+                    if (!eventType.equals("voice_category") && !eventType.equals("voice_channel")) {
+                        reply(interaction, "無効化（off）はVCカテゴリー別・VCチャンネル別でのみ使えます。");
+                        return;
+                    }
+                    store.setGuildSetting(guildId, "log." + key, "off");
+                    message = "対象のVCログを無効にしました（共通ログへのフォールバックもしません）。再開するには set で送信先を設定するか、disable で設定自体を解除してください。";
+                } else if ("disable".equals(interaction.subcommandName)) {
                     store.setGuildSetting(guildId, "log." + key, null);
                     message = "ログ送信先を解除しました。";
                 } else {
                     store.setGuildSetting(guildId, "log." + key, interaction.optionString("channel"));
                     message = "ログ送信先を設定しました。VCはチャンネル別設定がカテゴリー別設定より優先されます。";
+                }
+            }
+            case "vc-auto" -> {
+                if ("off".equals(interaction.subcommandName)) {
+                    store.setGuildSetting(guildId, "vc_auto", null);
+                    message = "VC自動生成を無効にしました。";
+                } else {
+                    String lobbyId = interaction.optionString("lobby");
+                    String categoryId = interaction.optionString("category");
+                    if (lobbyId.isBlank() || categoryId.isBlank()) {
+                        reply(interaction, "ロビーVCと生成先カテゴリーを指定してください。");
+                        return;
+                    }
+                    Map<String, Object> value = new LinkedHashMap<>();
+                    value.put("lobby_channel_id", lobbyId);
+                    value.put("category_id", categoryId);
+                    String template = interaction.optionString("name_template");
+                    if (!template.isBlank()) value.put("name_template", template);
+                    store.setGuildSetting(guildId, "vc_auto", value);
+                    message = "VC自動生成を設定しました。ロビーVCに参加したユーザーを、専用の一時VCへ自動で移動します（一時VCが空になると自動で削除します）。";
                 }
             }
             case "sticky" -> {
@@ -603,12 +657,92 @@ public final class StarHandler {
         String targetChannel = !newChannel.isBlank() ? newChannel : oldChannel;
         String categoryId = guildChannelParents.getOrDefault(guildId + ":" + targetChannel, "");
         String logChannel = resolveVoiceLogChannel(settings, targetChannel, categoryId);
-        if (logChannel.isBlank()) return;
-        String detail;
-        if (oldChannel.isBlank() && !newChannel.isBlank()) detail = "VC参加: <@" + userId + "> → <#" + newChannel + ">";
-        else if (!oldChannel.isBlank() && newChannel.isBlank()) detail = "VC退出: <@" + userId + "> ← <#" + oldChannel + ">";
-        else detail = "VC移動: <@" + userId + "> <#" + oldChannel + "> → <#" + newChannel + ">";
-        sendMessage(logChannel, detail, event.eventId + ":voice-log", null);
+        if (!logChannel.isBlank()) {
+            String detail;
+            if (oldChannel.isBlank() && !newChannel.isBlank()) detail = "VC参加: <@" + userId + "> → <#" + newChannel + ">";
+            else if (!oldChannel.isBlank() && newChannel.isBlank()) detail = "VC退出: <@" + userId + "> ← <#" + oldChannel + ">";
+            else detail = "VC移動: <@" + userId + "> <#" + oldChannel + "> → <#" + newChannel + ">";
+            sendMessage(logChannel, detail, event.eventId + ":voice-log", null);
+        }
+        handleVcAuto(event, payload, settings, guildId, userId, oldChannel, newChannel);
+    }
+
+    // ===== 6.1 VC自動生成 (Join to Create) =====
+    // ロビーVCへの参加を検知して専用の一時VCを作り、本人のみを移動させる。
+    // 一時VCは全員が退出した時点で削除する。権限不足などで Discord 操作が
+    // 失敗しても Bot 本体は落とさず、理由をログに残す。
+    private void handleVcAuto(Event event, Map<String, Object> payload, Map<String, Object> settings,
+                              String guildId, String userId, String oldChannel, String newChannel) {
+        Map<String, Object> vcAuto = Json.obj(settings.get("vc_auto"));
+        String lobbyId = Json.str(vcAuto.get("lobby_channel_id"));
+        if (!lobbyId.isBlank() && lobbyId.equals(newChannel) && !lobbyId.equals(oldChannel)) {
+            Map<String, Object> member = Json.obj(payload.get("member"));
+            Map<String, Object> user = Json.obj(member.get("user"));
+            if (!Json.bool(user.get("bot"))) {
+                String username = voiceDisplayName(member, user, userId);
+                String name = buildTempChannelName(Json.str(vcAuto.get("name_template")), username);
+                try {
+                    String createdId = ops.createVoiceChannel(guildId, name, Json.str(vcAuto.get("category_id")),
+                            event.eventId + ":vc-auto-create");
+                    Store.TempVoiceChannel temp = new Store.TempVoiceChannel();
+                    temp.guildId = guildId;
+                    temp.channelId = createdId;
+                    temp.ownerId = userId;
+                    temp.name = name;
+                    store.putTempVoiceChannel(temp);
+                    log("vc_auto_created guild=" + guildId + " channel=" + createdId + " owner=" + userId);
+                    try {
+                        ops.moveMember(guildId, userId, createdId, event.eventId + ":vc-auto-move");
+                    } catch (Exception moveError) {
+                        // 移動できない一時VCは孤児になるため、その場で削除する。
+                        log("vc_auto_move_failed guild=" + guildId + " user=" + userId + " channel=" + createdId
+                                + " error=" + moveError.getMessage());
+                        try {
+                            ops.deleteChannel(createdId, event.eventId + ":vc-auto-cleanup");
+                            store.removeTempVoiceChannel(guildId, createdId);
+                        } catch (Exception cleanupError) {
+                            log("vc_auto_cleanup_failed guild=" + guildId + " channel=" + createdId
+                                    + " error=" + cleanupError.getMessage());
+                        }
+                    }
+                } catch (Exception createError) {
+                    log("vc_auto_create_failed guild=" + guildId + " user=" + userId + " error=" + createError.getMessage());
+                }
+            }
+        }
+        // 退出・移動で空になった一時VCは削除する (所有者かどうかは問わない)。
+        if (!oldChannel.isBlank() && !oldChannel.equals(newChannel)) {
+            cleanupTempChannelIfEmpty(guildId, oldChannel, event.eventId);
+        }
+    }
+
+    private static String voiceDisplayName(Map<String, Object> member, Map<String, Object> user, String userId) {
+        String globalName = Json.str(user.get("global_name"));
+        if (!globalName.isBlank()) return globalName;
+        String nick = Json.str(member.get("nick"));
+        if (!nick.isBlank()) return nick;
+        return Json.str(user.get("username"), userId);
+    }
+
+    // 一時VCが空なら削除して記録も消す。削除が 404 (既に存在しない) の場合も
+    // 記録だけは消し、次回以降に残らないようにする。
+    private void cleanupTempChannelIfEmpty(String guildId, String channelId, String eventId) {
+        Store.TempVoiceChannel temp = store.getTempVoiceChannel(guildId, channelId);
+        if (temp == null) return;
+        String prefix = guildId + ":";
+        boolean occupied = voiceChannels.entrySet().stream()
+                .anyMatch(e -> e.getKey().startsWith(prefix) && channelId.equals(e.getValue()));
+        if (occupied) return;
+        try {
+            ops.deleteChannel(channelId, eventId + ":vc-auto-delete");
+            store.removeTempVoiceChannel(guildId, channelId);
+            log("vc_auto_deleted guild=" + guildId + " channel=" + channelId);
+        } catch (Exception e) {
+            log("vc_auto_delete_failed guild=" + guildId + " channel=" + channelId + " error=" + e.getMessage());
+            if (String.valueOf(e.getMessage()).contains("404")) {
+                store.removeTempVoiceChannel(guildId, channelId);
+            }
+        }
     }
 
     // ===== 7. イベント振り分け =====
@@ -657,6 +791,10 @@ public final class StarHandler {
                     if (!Json.str(state.get("user_id")).isBlank() && !Json.str(state.get("channel_id")).isBlank()) {
                         voiceChannels.put(guildId + ":" + Json.str(state.get("user_id")), Json.str(state.get("channel_id")));
                     }
+                }
+                // 前回終了時に残った一時VCの掃除 (在室者ゼロのものだけ削除)。
+                for (Store.TempVoiceChannel temp : store.listTempVoiceChannels(guildId)) {
+                    cleanupTempChannelIfEmpty(guildId, temp.channelId, event.eventId);
                 }
             }
             case "GUILD_DELETE" -> {
